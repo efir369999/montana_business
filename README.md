@@ -19,6 +19,7 @@
 | Where | How |
 |---|---|
 | iPhone, iPad (iOS 17.2 or later) | [TestFlight public link](https://testflight.apple.com/join/MSMfey6f) |
+| Mac with Apple silicon | The same [TestFlight link](https://testflight.apple.com/join/MSMfey6f), opened on the Mac |
 | App Store | Version 1.0 is being prepared for App Review |
 
 ## About
@@ -49,7 +50,7 @@ public record of the releases and changes.
 
 | | |
 |---|---|
-| Platform | iPhone and iPad with iOS 17.2 or later |
+| Platform | iPhone and iPad with iOS 17.2 or later; Apple silicon Mac |
 | Distribution | TestFlight, public link; App Store after review |
 | Link | https://testflight.apple.com/join/MSMfey6f |
 | TestFlight | 1.0; the newest build is 46 (2026-10-06) |
