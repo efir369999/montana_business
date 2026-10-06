@@ -52,7 +52,7 @@ public record of the releases and changes.
 | Platform | iPhone and iPad with iOS 17.2 or later |
 | Distribution | TestFlight, public link; App Store after review |
 | Link | https://testflight.apple.com/join/MSMfey6f |
-| TestFlight | 1.0; the newest build is 45 (2026-10-06) |
+| TestFlight | 1.0; the newest build is 46 (2026-10-06) |
 | Feedback | GitHub Issues in this repository, or contact@montana.quest |
 | Privacy policy | https://montana.xxx/privacy/ |
 
@@ -136,10 +136,10 @@ go by e-mail, not into an issue: see [SECURITY.md](SECURITY.md).
 
 From [CHANGELOG.md](CHANGELOG.md).
 
+- **2026-10-06 19:29 UTC** — The Business TestFlight road ends at the upload; the distribution runs as its next bare step, outside the heavy gate (commit `e6048b270e87`)
 - **2026-10-06 19:09 UTC** — Advance Montana Business build number to 46 (commit `5a06629e1716`)
 - **2026-10-06 19:09 UTC** — Business notifications: the system answer is read at every entry and return, asked again while unanswered, a refusal stands as a crossed speaker (the Messenger 562ac469) (commit `92bf189444e6`)
 - **2026-10-06 17:53 UTC** — Advance Montana Business build number to 45 (commit `11e035831f1e`)
 - **2026-10-06 17:53 UTC** — Business sign-in asks both doors of the service and asks again at Next; Forget this device takes the number out of the directory; the contacts line tells the truth (commit `fab6196dbd3c`)
-- **2026-10-06 15:47 UTC** — Advance Montana Business build number to 44 (commit `16920048cbe1`)
 
 The full record of every change, with its build, system and source tree, is in the log.

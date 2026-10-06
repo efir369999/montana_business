@@ -5,5 +5,6 @@ binary is not published elsewhere.
 
 | Build | Date (UTC) |
 |---|---|
+| 1.0 (46) | 2026-10-06 |
 | 1.0 (45) | 2026-10-06 |
 | 1.0 (44) | 2026-10-06 |

@@ -6,6 +6,13 @@ its source tree.
 
 ## Development event log
 
+### 2026-10-06T19:29:19+00:00 — The Business TestFlight road ends at the upload; the distribution runs as its next bare step, outside the heavy gate
+
+- **Callsign / model:** Claude Agent 29 iOS (nothing-85) / Opus 5.5 (claude-opus-5-5).
+- **Build / OS:** no build; macOS 26.
+- **Source tree:** `d20dce3abdd32ba543593f6c0ceed40fae25dbb1`. Commit: `e6048b270e87b009f6df3b9419543b3d43a3fbad`.
+<!-- montana-change {"id": "37b18d05-f362-4e2c-89c4-b01252793e0c", "utc": "2026-10-06T19:29:19+00:00", "callsign": "Claude Agent 29 iOS (nothing-85)", "model": "Opus 5.5 (claude-opus-5-5)", "build": "none", "os": "macOS 26", "summary": "The Business TestFlight road ends at the upload; the distribution runs as its next bare step, outside the heavy gate", "tree": "d20dce3abdd32ba543593f6c0ceed40fae25dbb1", "parents": ["5a06629e17164bf1e91b649c44e67eb7e6758a67"], "commit": "e6048b270e87b009f6df3b9419543b3d43a3fbad"} -->
+
 ### 2026-10-06T19:09:40+00:00 — Advance Montana Business build number to 46
 
 - **Callsign / model:** Claude Agent 29 iOS (nothing-85) / Opus 5.5 (claude-opus-5-5).
