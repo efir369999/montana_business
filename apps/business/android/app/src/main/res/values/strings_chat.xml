@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reply">Reply</string>
+    <string name="edit">Edit</string>
+    <string name="editing">Editing</string>
+    <string name="delete_for_me">Delete for me</string>
+    <string name="delete_for_everyone">Delete for everyone</string>
+    <string name="delete_message_q">Delete message?</string>
+    <string name="delete_chat">Delete chat</string>
+    <string name="delete_chat_q">Delete this chat? The correspondence ends on this device.</string>
+    <string name="edited">edited</string>
+    <string name="peer">Peer</string>
+    <string name="channel_letters">Messages</string>
+    <string name="new_message">New message</string>
+    <string name="voice_message">🎤 Voice message</string>
+    <string name="long_letter">Long message</string>
+    <string name="photo_or_video">Photo or video</string>
+    <string name="file_word">File</string>
+    <string name="open_word">Open</string>
+    <string name="media_failed">The file did not reach the node</string>
+    <string name="loading_file">Loading…</string>
+    <string name="voice_hint">Recording… release to send, slide left to cancel</string>
+    <string name="invite_spent">Invitation expired. Ask for a new code.</string>
+    <string name="invite_refused">The invitation could not be opened. Check the link or try again.</string>
+    <string name="invite_nameless">Names are not supported on Android yet — ask for a card link.</string>
+    <string name="invite_wait">Create your identity first — the invitation will open right after.</string>
+    <string name="scan">Scan</string>
+    <string name="paste_link">Paste a link</string>
+    <string name="scan_hint">Point the camera at a Montana code</string>
+    <string name="no_invite_in_clipboard">There is no Montana link in the clipboard</string>
+    <string name="camera_needed">Montana needs the camera to read the code</string>
+    <string name="gr_member">Member</string>
+    <string name="gr_out_note">You are no longer a member: the messages stay here to read.</string>
+    <plurals name="gr_members"><item quantity="one">%d member</item><item quantity="other">%d members</item></plurals>
+    <string name="lw_photo">Photo</string>
+    <string name="lw_video">Video</string>
+    <string name="lw_video_message">Video message</string>
+    <string name="lw_media">Media</string>
+    <string name="lw_sticker">Sticker</string>
+    <string name="lw_gif">GIF</string>
+</resources>

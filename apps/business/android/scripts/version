@@ -1,0 +1,8 @@
+# The version Montana Business for Android shows: v<MARKETING> (<build>).
+#
+# Montana Business keeps its own count of builds from 1, apart from the Messenger's (iOS and Android alike): the
+# build number is the Business build both platforms carry, raised by the one who builds, never borrowed from the
+# Messenger. The Messenger's rule of catching up with iOS 1277 does not apply here, so TARGET stays empty.
+MARKETING=1.0
+TARGET=
+BUILD=39

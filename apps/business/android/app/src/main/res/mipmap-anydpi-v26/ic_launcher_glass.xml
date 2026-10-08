@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@android:color/black" />
+    <foreground android:drawable="@drawable/ic_launcher_glass_foreground" />
+    <!-- no monochrome layer: the Messenger's mark is not the Business's, and the author's icon has none; a themed launcher shows the icon itself -->
+</adaptive-icon>

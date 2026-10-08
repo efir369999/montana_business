@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reply">回复</string>
+    <string name="edit">编辑</string>
+    <string name="editing">正在编辑</string>
+    <string name="delete_for_me">为我删除</string>
+    <string name="delete_for_everyone">为所有人删除</string>
+    <string name="delete_message_q">删除消息？</string>
+    <string name="delete_chat">删除聊天</string>
+    <string name="delete_chat_q">删除此聊天？此设备上的通信将结束。</string>
+    <string name="edited">已编辑</string>
+    <string name="peer">对方</string>
+    <string name="channel_letters">消息</string>
+    <string name="new_message">新消息</string>
+    <string name="voice_message">🎤 语音消息</string>
+    <string name="long_letter">长消息</string>
+    <string name="photo_or_video">照片或视频</string>
+    <string name="file_word">文件</string>
+    <string name="open_word">打开</string>
+    <string name="media_failed">文件未到达节点</string>
+    <string name="loading_file">加载中…</string>
+    <string name="voice_hint">录音中… 松开发送，左滑取消</string>
+    <string name="invite_spent">邀请已过期。请索取新代码。</string>
+    <string name="invite_refused">无法打开邀请。请检查链接或重试。</string>
+    <string name="invite_nameless">Android 暂不支持名称——请索取名片链接。</string>
+    <string name="invite_wait">请先创建身份——邀请随后会自动打开。</string>
+    <string name="scan">扫描</string>
+    <string name="paste_link">粘贴链接</string>
+    <string name="scan_hint">将相机对准 Montana 代码</string>
+    <string name="no_invite_in_clipboard">剪贴板中没有 Montana 链接</string>
+    <string name="camera_needed">Montana 需要相机来读取代码</string>
+    <string name="gr_member">成员</string>
+    <string name="gr_out_note">您已不再是成员：消息仍可在此阅读。</string>
+    <plurals name="gr_members"><item quantity="other">%d 名成员</item></plurals>
+    <string name="lw_photo">照片</string>
+    <string name="lw_video">视频</string>
+    <string name="lw_video_message">视频消息</string>
+    <string name="lw_media">媒体</string>
+    <string name="lw_sticker">贴纸</string>
+    <string name="lw_gif">GIF</string>
+</resources>

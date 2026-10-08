@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- iOS bubble.left.and.bubble.right: two speech bubbles, the front one with its tail, outlined (the comments under a post, Sh.4) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+  <path android:strokeColor="@android:color/white" android:strokeWidth="1.9" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" android:pathData="M9.5,7.2V6.5c0,-1.4 1.1,-2.5 2.5,-2.5h7c1.4,0 2.5,1.1 2.5,2.5v4.5c0,1.4 -1.1,2.5 -2.5,2.5h-0.3v2.3l-2.6,-2.3"/>
+  <path android:strokeColor="@android:color/white" android:strokeWidth="1.9" android:strokeLineCap="round" android:strokeLineJoin="round" android:fillColor="#00000000" android:pathData="M4.5,8h8c1.4,0 2.5,1.1 2.5,2.5v4.5c0,1.4 -1.1,2.5 -2.5,2.5h-4.2l-3.3,2.6v-2.6h-0.5c-1.4,0 -2.5,-1.1 -2.5,-2.5v-4.5c0,-1.4 1.1,-2.5 2.5,-2.5z"/>
+</vector>

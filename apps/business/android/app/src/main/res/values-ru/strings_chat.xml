@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="reply">Ответить</string>
+    <string name="edit">Изменить</string>
+    <string name="editing">Редактирование</string>
+    <string name="delete_for_me">Удалить у меня</string>
+    <string name="delete_for_everyone">Удалить у всех</string>
+    <string name="delete_message_q">Удалить сообщение?</string>
+    <string name="delete_chat">Удалить чат</string>
+    <string name="delete_chat_q">Удалить этот чат? Переписка на этом устройстве закончится.</string>
+    <string name="edited">изменено</string>
+    <string name="peer">Собеседник</string>
+    <string name="channel_letters">Сообщения</string>
+    <string name="new_message">Новое сообщение</string>
+    <string name="voice_message">🎤 Голосовое сообщение</string>
+    <string name="long_letter">Длинное сообщение</string>
+    <string name="photo_or_video">Фото или видео</string>
+    <string name="file_word">Файл</string>
+    <string name="open_word">Открыть</string>
+    <string name="media_failed">Файл не дошёл до узла</string>
+    <string name="loading_file">Загрузка…</string>
+    <string name="voice_hint">Запись… отпустите, чтобы отправить; влево — отмена</string>
+    <string name="invite_spent">Приглашение истекло. Попросите новый код.</string>
+    <string name="invite_refused">Приглашение не открылось. Проверьте ссылку или попробуйте ещё раз.</string>
+    <string name="invite_nameless">Имена на Android пока не поддерживаются — попросите ссылку-визитку.</string>
+    <string name="invite_wait">Сначала создайте личность — приглашение откроется сразу после.</string>
+    <string name="scan">Сканировать</string>
+    <string name="paste_link">Вставить ссылку</string>
+    <string name="scan_hint">Наведите камеру на код Montana</string>
+    <string name="no_invite_in_clipboard">В буфере обмена нет ссылки Montana</string>
+    <string name="camera_needed">Montana нужна камера, чтобы прочитать код</string>
+    <string name="gr_member">Участник</string>
+    <string name="gr_out_note">Вы больше не участник: сообщения остаются здесь для чтения.</string>
+    <plurals name="gr_members"><item quantity="one">%d участник</item><item quantity="few">%d участника</item><item quantity="many">%d участников</item><item quantity="other">%d участника</item></plurals>
+    <string name="lw_photo">Фото</string>
+    <string name="lw_video">Видео</string>
+    <string name="lw_video_message">Видеосообщение</string>
+    <string name="lw_media">Медиа</string>
+    <string name="lw_sticker">Стикер</string>
+    <string name="lw_gif">GIF</string>
+</resources>

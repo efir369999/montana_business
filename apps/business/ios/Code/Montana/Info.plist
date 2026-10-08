@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>$(MONTANA_DISPLAY_NAME)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>$(MONTANA_URL_SCHEME)</string>
+			</array>
+		</dict>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>MontanaDomain</key>
+	<string>$(MONTANA_DOMAIN)</string>
+	<key>MontanaBizService</key>
+	<string>$(MONTANA_BIZ_SERVICE)</string>
+	<key>MontanaBizAppDoor</key>
+	<string>tg</string>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Montana uses the camera to take photos and videos for your chats.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>MT Business uses your contacts to show which of them are already here, checking their numbers against the directory as hashes, to share a contact in a chat, and to save the people you add to your contacts by their @name. Turn this off in Settings, Privacy, Sync contacts.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Montana uses Face ID to show your 24-word recovery phrase.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>MT Business uses your location so you can send it in a chat. If a work chat asks for its people's location and you allow it, your location is sent to that chat's managers while you are a member — also in the background, with the location indicator shown, and by itself once in each reporting window. You can stop it at any time on the chat's page.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Montana uses the microphone to record voice messages, videos and calls.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Montana turns an order you dictate into text on this device only; the sound never leaves the phone.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Montana saves photos from your chats to your library.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Montana shows your recent photos and videos so you can send one quickly.</string>
+	<key>PHPhotoLibraryPreventAutomaticLimitedAccessAlert</key>
+	<true/>
+	<key>NSUbiquitousContainers</key>
+	<dict>
+		<key>iCloud.xxx.montana.Business</key>
+		<dict>
+			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
+			<false/>
+			<key>NSUbiquitousContainerName</key>
+			<string>Montana Business</string>
+			<key>NSUbiquitousContainerSupportedFolderLevels</key>
+			<string>Any</string>
+		</dict>
+	</dict>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+		<string>INStartCallIntent</string>
+		<string>INStartAudioCallIntent</string>
+		<string>INStartVideoCallIntent</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>$(MONTANA_APP_ID).wake</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>voip</string>
+		<string>audio</string>
+		<string>remote-notification</string>
+		<string>location</string>
+	</array>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+</dict>
+</plist>

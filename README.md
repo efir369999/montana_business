@@ -21,6 +21,7 @@
 | iPhone, iPad (iOS 17.2 or later) | [TestFlight public link](https://testflight.apple.com/join/MSMfey6f) |
 | Mac with Apple silicon | The same [TestFlight link](https://testflight.apple.com/join/MSMfey6f), opened on the Mac |
 | App Store | Version 1.0 is being prepared for App Review |
+| Files | [MT-Business.ipa](https://github.com/efir369999/montana_business/releases/latest/download/MT-Business.ipa): the App Store export, to read, compare with the source or re-sign |
 
 ## About
 
@@ -33,18 +34,35 @@ A person signs in with a phone number, with an e-mail address, or with a 24-word
 neither. A confirmed number lets the people who have it in their address book find the person, and shows which of one's own
 contacts are already here.
 
-This repository is the public face of the release programme: the downloads, the release history, how to join the test track,
-what to test, how to report what you find, the security policy. The source code is not published; this repository carries the
-public record of the releases and changes.
+This repository holds the whole source of MT Business — its protocol core and its iPhone, iPad, Mac and Android clients — beside
+the public record of its releases and changes. MT Business is part of the Montana Time ecosystem, whose other applications live in
+[montana_messenger](https://github.com/efir369999/montana_messenger).
 
 ## What is in this repository
 
 | Path | What it is |
 |---|---|
-| [RELEASES.md](RELEASES.md) | Every build published on TestFlight |
+| [core/](core/) | The protocol core: specification, reference implementation and the client core with `mt-business`; see [core/README.md](core/README.md) |
+| [apps/business/ios/](apps/business/ios/) | MT Business for iPhone, iPad and Mac, build 68 |
+| [apps/business/android/](apps/business/android/) | MT Business for Android, build 39 |
+| [RELEASES.md](RELEASES.md) | Every published build, with its file, digest and source commit |
 | [CHANGELOG.md](CHANGELOG.md) | Every commit of the iOS source, with its build, system and source tree |
 | [SECURITY.md](SECURITY.md) | How to report a weakness, and what is in scope |
 | [.github/](.github/ISSUE_TEMPLATE/bug_report.md) | The bug report template |
+
+## Build from source
+
+```
+cd core/Code
+cargo test --workspace --release
+cd ../../apps/business/ios
+MONTANA_CORE_SRC="$PWD/../../../core/Code/crates/mt-bindings" bash scripts/build-core.sh
+MONTANA_PROTOCOL_CORE="$PWD/../../../core/Montana-Core" bash scripts/build-protocol-core.sh
+bash fetch-webrtc.sh
+```
+
+Then open `Montana.xcodeproj` in Xcode 26.2 and choose your own team for signing. Node endpoints in the tree are
+documentation addresses (RFC 5737); the released build carries the live ones.
 
 ## Join the beta
 
@@ -53,7 +71,7 @@ public record of the releases and changes.
 | Platform | iPhone and iPad with iOS 17.2 or later; Apple silicon Mac |
 | Distribution | TestFlight, public link; App Store after review |
 | Link | https://testflight.apple.com/join/MSMfey6f |
-| TestFlight | 1.0; the newest build is 46 (2026-10-06) |
+| TestFlight | 1.0; the newest build is 68 (2026-10-08) |
 | Feedback | GitHub Issues in this repository, or contact@montana.quest |
 | Privacy policy | https://montana.xxx/privacy/ |
 
@@ -131,7 +149,7 @@ go by e-mail, not into an issue: see [SECURITY.md](SECURITY.md).
 - History lives on the device; deleting the application erases the history on that device. An optional daily copy goes only to
   your own iCloud, sealed under a key that only your 24 words open.
 - The coins and the wallet are not yet shared with the Montana messenger.
-- Android is not part of this beta.
+- On Android the Montana Messenger carries the organisations; the Android source of MT Business is in `apps/business/android`.
 
 ## Latest changes
 

@@ -1,0 +1,21 @@
+[package]
+name = "mt-business"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+description = "Montana Business core: the organisation TimeChain (roster R, HR H), rights, fold, salary due, phone attestation. Application layer outside consensus; iOS links it through mt-bindings (C ABI), Android through JNI."
+
+[dependencies]
+mt-crypto = { path = "../mt-crypto" }
+mt-codec = { path = "../mt-codec" }
+mt-mnemonic = { path = "../mt-mnemonic" }
+zeroize = { workspace = true }
+# Reads the JSON command of the author door and of the attest signer only; frames never touch serde.
+serde_json = { version = "=1.0.140", default-features = false, features = ["std"] }
+
+[[bin]]
+name = "mt-business-attest"
+path = "src/bin/mt-business-attest.rs"

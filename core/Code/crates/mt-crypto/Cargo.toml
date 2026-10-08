@@ -1,0 +1,35 @@
+[package]
+name = "mt-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+testing = []
+# The RustCrypto hand of the six ML-DSA/ML-KEM functions (src/rustcrypto.rs): the web page's WebAssembly, and on a native
+# machine the tests that hold both hands to the same frozen bytes. A node or a phone build never enables it.
+rustcrypto = ["dep:ml-dsa", "dep:ml-kem", "dep:rand_core"]
+
+[dependencies]
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+# ML-KEM sealing (seal_to/open_from) -- postquantum end-to-end to the recipient.
+chacha20poly1305 = { workspace = true }
+# getrandom -- OS CSPRNG for the test-only `keypair()`. Size ~30 KB in the production
+# binary; `keypair()` itself is gated via #[cfg(any(test, feature =
+# "testing"))]. Trade-off: a slightly larger production binary in exchange for
+# production-grade entropy in the test helper (closes F-6).
+getrandom = { workspace = true }
+ml-dsa = { version = "=0.1.1", default-features = false, features = ["alloc", "zeroize"], optional = true }
+ml-kem = { version = "=0.2.3", default-features = false, features = ["deterministic", "zeroize"], optional = true }
+rand_core = { version = "=0.6.4", features = ["getrandom"], optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libc = "=0.2.186"
+mt-crypto-native = { path = "../mt-crypto-native" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The page's randomness is the browser's own (crypto.getRandomValues), reached by getrandom 0.2 through its js feature.
+getrandom = { version = "=0.2.15", default-features = false, features = ["js"] }

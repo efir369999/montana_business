@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Montana Business: the author's icon file byte for byte (Media/icon_montana_business.png, the crest of 06.10.2026, 1254x1254, sha256 d341d8b4...), laid as app_icon_glass_art.png scaled 1.17 into the adaptive icon's visible 72dp, the drawn tile's centre on the icon's (CrestView, iOS MTAppCrest; the author's word 06.10.2026 13:5x), nothing drawn over it. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/app_icon_glass_art"
+    android:insetLeft="12.69dp"
+    android:insetRight="11.07dp"
+    android:insetTop="13.12dp"
+    android:insetBottom="10.64dp" />
