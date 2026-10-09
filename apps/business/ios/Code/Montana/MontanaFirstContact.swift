@@ -1892,10 +1892,11 @@ enum MontanaMeeting {
             verdict("This post is not on this phone yet. Open the writer's page, then tap the link again.")
             return
         }
-        // A RETIRED LINK OF AN OLDER BUILD (the author's word 08.10.2026: the coins leave Montana wholly for their own app, Montana
-        // Wallet): it opens nothing here and is no invitation either -- the invitation road below would answer «could not be opened».
+        // A COIN'S LINK OPENS THE WALLET (the author's word 03.10: «every Montana link of the coins is tappable, not only the
+        // others'»): the coin letter's machine line is no invitation -- the invitation road below answered it «could not be opened».
         if url.scheme?.lowercased() == "montana", url.host?.lowercased() == "coin" {
-            MontanaP2PTrace.mark("link_done", "retired link")
+            MontanaP2PTrace.mark("link_done", "coin opens the wallet")
+            DispatchQueue.main.async { NotificationCenter.default.post(name: .montanaOpenWallet, object: nil) }
             return
         }
         let host = url.host?.lowercased() ?? ""

@@ -95,7 +95,6 @@ struct SettingsTabView: View {
     var onClose: (() -> Void)? = nil
     @AppStorage("userName") private var displayName: String = ""
     @AppStorage("avatarData") private var avatarData: Data = Data()
-    @AppStorage("avatarGallery") private var avatarGalleryJSON: String = ""
     @AppStorage("statusEmoji") private var statusEmoji: String = ""
     private let testMode = false
     @State private var info = ""
@@ -124,7 +123,7 @@ struct SettingsTabView: View {
                 Section {
                     NavigationLink { SeedShowView().montanaMotionMeter() } label: { navLabel("Save 24 words", "key.horizontal.fill", .gray) }
                 } footer: {
-                    Text("On a new phone, the 24 words bring back your saved history; your number alone brings back only your role in your organizations.")
+                    Text("On a new phone, the 24 words bring back your coins and your saved history; your number alone brings back only your role in your organizations.")
                 }
                 .listRowBackground(MTGlassRowPlate())
                 Section {
@@ -172,11 +171,7 @@ struct SettingsTabView: View {
                 MTAvatarCropView(image: src.image) { jpeg in
                     cropSource = nil
                     guard let jpeg else { return }
-                    if let name = saveToDocs(jpeg, ext: "jpg") {
-                        var list = (try? JSONDecoder().decode([String].self, from: Data(avatarGalleryJSON.utf8))) ?? []
-                        list.insert(name, at: 0)
-                        avatarGalleryJSON = String(data: (try? JSONEncoder().encode(list)) ?? Data(), encoding: .utf8) ?? ""
-                    }
+                    MTMyFaces.add(jpeg)   // the face joins the person's former faces, in the faces' own place (09.10.2026)
                     MontanaSelfFace.set(jpeg)
                 }
             }
@@ -1370,12 +1365,16 @@ struct DataStorageView: View {
                 Text("A backup holds every conversation and attachment this device keeps, sealed with the key your 24 words open. Keep the words: without them nobody can read it, and neither can you.")
             }
             .listRowBackground(MTGlassRowPlate())
+            MTKeepingSection()   // the copy kept by the people one writes to (MTKeeping, 08.10)
         }
         .scrollContentBackground(.hidden)
         .montanaPageGround()   // my page's ground, as the drawer and my page wear it (25.09)
         .navigationTitle("Data and Storage")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: plan) { _, p in p.save() }
+        // A copy taken back on this very page laid the person's plan: the page holds it, never the plan read at its opening,
+        // which the next choice would write whole over the laid one (09.10).
+        .onReceive(NotificationCenter.default.publisher(for: .montanaCopyLaid)) { _ in plan = CopyPlan.load() }
         .onAppear {
             CopyInventory.gather { inventory = $0 }
             MontanaBackupCloud.ready { r in
@@ -1661,48 +1660,14 @@ enum MTSystemAccess {
     }
 }
 
-/// A ROW AN EARLIER BUILD PUT IN THE PUBLIC TABLE LEAVES WITH THE ACCOUNT (App Review 5.1.1(v); the author's word 08.10.2026: the
-/// coins left this app wholly for their own, Montana Wallet): this build puts no row and reads no table, yet a row an earlier build
-/// put there is withdrawn from every node when the account is deleted, while the words still derive the row's token. The
-/// derivation is the table's own, byte for byte: HKDF-SHA-256 of the entropy under its label, then one HMAC (tools/mt-top-check.py).
-enum MTRetiredRow {
-    private static let keyLabel = Data("mt-top-owner-v1".utf8)   // NOT-UI: the derivation's own label
-    private static let tokenLabel = Data("mt-top-token".utf8)    // NOT-UI: the token's own label
-    static func token(entropy: Data) -> Data {
-        let k = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: entropy), salt: Data(), info: keyLabel, outputByteCount: 32)
-        return Data(HMAC<SHA256>.authenticationCode(for: tokenLabel, using: k))
-    }
-    /// THE FROZEN VECTOR (the counting bytes 0x00..0x1f; tools/mt-top-check.py derives it again by hand from RFC 5869 and
-    /// FIPS 198): the home node's label in place of the table's, a reversed root or a key hashed as text all name another row
-    /// and withdraw nothing.
-    static func tokenKAT() -> Bool {
-        MontanaHomeNode.hex(token(entropy: Data((0..<32).map { UInt8($0) }))) == "67b2f9e4f8ba74bffee41cdfd8de2d3efca20554a495910ebc823b8ef4545ce2"
-    }
-    static func withdraw() {
-        guard let m = MontanaSeed.mnemonic, let e = MontanaSeedKeys.entropyFrom(mnemonic: m), e.count == 32,
-              let d = try? JSONSerialization.data(withJSONObject: ["token": MontanaHomeNode.hex(token(entropy: e)), "hide": true]) else { return }
-        Task {
-            var heard = 0
-            for b in MontanaWakePush.orderedBases(for: "top") {
-                guard let u = URL(string: b + "/top-put") else { continue }   // SERVER-DEBT-ACK: the accelerator node (rung 4), the public table
-                var req = URLRequest(url: u); req.httpMethod = "POST"; req.timeoutInterval = 8   // SERVER-DEBT-ACK: the accelerator node (rung 4)
-                req.setValue("application/json", forHTTPHeaderField: "content-type")
-                req.httpBody = d
-                if let r = try? await URLSession.shared.data(for: req), (r.1 as? HTTPURLResponse)?.statusCode == 200 { heard += 1 }   // SERVER-DEBT-ACK: the accelerator node (rung 4)
-            }
-            MontanaP2PTrace.mark("row_withdrawn", "doors=\(heard)")
-        }
-    }
-}
-
 struct PrivacyView: View {
     /// The device forgets the person. Nothing is asked of anyone: this person exists nowhere
     /// else, and the forgetting is wholly local — content, identity and seed leave as one.
     /// The settings sheet lowers with it: the first-run page stands under it otherwise.
     private func forgetSeed() {
-        // THE IDENTITY LEAVES THE NODES TOO (App Review 5.1.1(v), 08.10.2026: deleting an account deletes its records): a row an
-        // earlier build put in the public table is withdrawn from every node while the words still derive its token.
-        MTRetiredRow.withdraw()
+        // THE IDENTITY LEAVES THE NODES TOO (App Review 5.1.1(v), 08.10.2026: deleting an account deletes its records): the row of
+        // the Montana top -- the name and the coins shown -- is withdrawn from every node while the words still derive its token.
+        MTTopNet.shared.withdraw()
         Task { @MainActor in
             // THE NAME AND THE NUMBER LEAVE FIRST (App Review 5.1.1(v), 08.10.2026: the text says so, and so it is): the keeper of
             // names releases the name, the confirmation service's catalogue forgets the number (MTBizDirectory, the Business's own
@@ -1721,6 +1686,8 @@ struct PrivacyView: View {
     @AppStorage(MTLinkPreviewBuilder.switchKey) private var linkPreviews = true   // the card of a link I send — my device reads that page
     @AppStorage(MontanaAppleID.switchKey) private var appleOn = true   // the seed rides the Apple Account's keychain (28.09)
     @State private var presenceShared = MontanaPresencePrivacy.sharing
+    @AppStorage(MTCoinShow.key) private var coinsShown = false   // the owner shows or hides their coins (04.10)
+    @State private var localNetwork = MontanaP2PNode.meshDiscoverable   // the one mesh switch owns the concept
     @ObservedObject private var place = MTLocationAccess.shared   // the one owner of the location permission says the word
     @State private var photosAccess = MTSystemAccess.photosWord       // the system's own word for this app's photos
     @State private var contactsAccess = MTSystemAccess.contactsWord   // and for its contacts
@@ -1743,10 +1710,22 @@ struct PrivacyView: View {
 
     var body: some View {
         List {
-            // The local network has no row: this app touches none since the mesh left for its own app,
-            // Montana Mesh (the author's word 08.10.2026). The permissions below live with the system;
-            // they refresh on the return-to-app event, with no polling and no timer.
+            // The permission lives with the system, and the app does not flip it: iOS has no
+            // call that would change local-network access. The row leads to where it changes
+            // and shows what we can see: whether announcing ourselves on the network worked.
+            // It refreshes on the return-to-app event — the person came back from Settings, so
+            // it is time to read anew. No polling, no timer: both would count blind between events.
             Section {
+                Button { MontanaSystemSettings.open() } label: {
+                    HStack(spacing: 12) {
+                        icon("globe", .blue)
+                        Text("Local Network").foregroundColor(.white)
+                        Spacer()
+                        Text(localNetwork ? "Connected" : "Disconnected").foregroundColor(.gray)
+                        Image(systemName: "chevron.right").foregroundColor(Color(white: 0.35)).font(.footnote.weight(.semibold))
+                    }
+                    .contentShape(Rectangle())   // the whole row is the target, not only its words (22.09)
+                }
                 // WHERE THIS PHONE IS, ASKED AND CHANGED HERE TOO (the author's word 23.09). The
                 // permission a person never answered is asked by this very row; one already
                 // decided is changed where the system keeps it — the same tap the place page
@@ -1798,6 +1777,17 @@ struct PrivacyView: View {
                     Text("Only whether others see you online. Walls and pages come and go regardless.")
                         .font(.caption).foregroundColor(.gray)
                 }
+                // THE OWNER SHOWS OR HIDES THEIR COINS (the author's words 04.10.2026 05:47 and 05:48 MSK: «whether the balance is
+                // shown each decides, on by default; who does not show is not in the top -- the privacy settings»; «the owner governs
+                // privacy»): one switch for the Montana top, the coins told to correspondents and the coin's badge (MTCoinShow).
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 12) {
+                        icon("trophy.fill", .orange)
+                        Toggle("Show my coins", isOn: $coinsShown)
+                    }
+                    Text("Your name and coins stand in the Montana top for everyone, and your correspondents see your coins. Off, you are not in the top.")
+                        .font(.caption).foregroundColor(.gray)
+                }
                 HStack(spacing: 12) {
                     icon("checkmark.circle.fill", .green)
                     Toggle("Read receipts", isOn: $readReceipts)
@@ -1843,6 +1833,13 @@ struct PrivacyView: View {
                     HStack(spacing: 12) {
                         icon("eye", .blue)
                         Text("Who can see my wall").foregroundColor(.white)
+                    }
+                }
+                // THE VPN WALL'S RULE (the author's word 29.09): the same five choices, over the servers and plans it carries.
+                NavigationLink { MTBoardRulePage(act: .vpn) } label: {
+                    HStack(spacing: 12) {
+                        icon("network", .blue)
+                        Text("Who can see my VPN wall").foregroundColor(.white)
                     }
                 }
             } footer: {
@@ -1925,6 +1922,7 @@ struct PrivacyView: View {
         .navigationTitle("Privacy")
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: presenceShared) { _, v in MontanaPresencePrivacy.setSharing(v) }   // 10-C.3
+        .onChange(of: coinsShown) { _, v in MTTopNet.shared.showChanged(v) }   // the table and the pairs hear it now
         .onChange(of: diagShare) { _, _ in MontanaDiagConsent.apply() }   // off: the extensions lose the diary's id at once
         .onAppear { refreshAccess() }
         // Returning to the app is that very event: the person may have changed the permission
@@ -1935,6 +1933,7 @@ struct PrivacyView: View {
     }
 
     private func refreshAccess() {
+        localNetwork = MontanaBonjour.shared.announceAccepted
         place.refresh()
         photosAccess = MTSystemAccess.photosWord
         contactsAccess = MTSystemAccess.contactsWord
@@ -2102,6 +2101,8 @@ struct MontanaOnboardingView: View {
     @State private var taking: Double? = nil              // a copy coming back from iCloud: frames filed, this phone's count
     @State private var takingWord: LocalizedStringKey = "Opening your identity…"
     @ObservedObject private var homeNode = HomeNodeWatch.shared   // the node's copy on its way back, for the bar
+    @ObservedObject private var keep = MTKeeping.shared           // the parts coming back from the people one wrote to (08.10)
+    @State private var barSince = Date()                          // when the bar first stood on the page: the time left is measured from it
     @ObservedObject private var cloud = CloudWatch.shared         // iCloud's copy on its way back, in iCloud's count
     @ObservedObject private var seats = MTSeats.shared            // a person being added: the page stands on the road of the door (06.10)
     @State private var groundChosen = false                       // the new person chose a ground: the pages wear it from then on
@@ -2224,6 +2225,7 @@ struct MontanaOnboardingView: View {
                     return
                 }
                 bornKeys = acc
+                MTLife.born()   // the person's first second: the TimeChain of the person is drawn from it in every app of the words
                 MontanaP2PTrace.mark("seed_born", "ms=\(ms) stored=1" + road)
                 MontanaEntropy.report("birth")   // what this identity stands on — recorded that same instant
                 step = next
@@ -2259,7 +2261,7 @@ struct MontanaOnboardingView: View {
             VStack(alignment: .leading, spacing: 12) {
                 privRow("key.fill", "Identity from 24 words", "Only you hold the key")
                 privRow("lock.shield.fill", "End-to-end encryption", "The key lives on your devices")
-                privRow("at", "Your own address", "People message you at it")
+                privRow("creditcard.fill", "Your own wallet address", "People message you and send Montana to it")
                 privRow("point.3.connected.trianglepath.dotted", "No servers", "Your phone carries the messages itself")
             }
             Spacer()
@@ -2328,6 +2330,7 @@ struct MontanaOnboardingView: View {
                                 return
                             }
                             MontanaP2PTrace.mark("seed_opened", "ms=\(ms)")
+                            MontanaBackup.shutIfNew()
                             takeFromNode()
                         } else {
                             MontanaP2PTrace.mark("seed_refused", "ms=\(ms)")
@@ -2431,7 +2434,7 @@ struct MontanaOnboardingView: View {
     /// A refusal is spoken (the critic, 28.09), with «Try again» and the person's own way on without the copy.
     func takeFromNode() {
         let h = nodeHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !h.isEmpty else { return onDone() }
+        guard !h.isEmpty else { return takeFromKeepers() }
         MontanaHomeNode.setHost(h)
         MontanaHomeNode.setOn(true)
         takingWord = "Taking your history back"
@@ -2464,6 +2467,7 @@ struct MontanaOnboardingView: View {
                     return
                 }
                 MontanaP2PTrace.mark("apple_id", "opened from the account")
+                MontanaBackup.shutIfNew()
                 takeFromCloud()
             }
         }
@@ -2515,26 +2519,78 @@ struct MontanaOnboardingView: View {
         refusal = word
     }
     private var cloudShare: Double? { if case .coming(let f?) = cloud.fetching { return f } else { return nil } }
-    /// The person may walk on without the copy while nothing is being laid into this device: a copy half laid is not a state
-    /// to leave in, and the opening of the words (their stretch) is not one either.
+    /// The person may walk on while the opening of the words (their stretch) is not under way. The copy of the people one wrote to
+    /// goes on by itself behind them (the author's word 09.10.2026: «Continue -- the restore goes on in the background»): its one
+    /// owner is MTKeeping, not this page; a copy from the node or from iCloud is this page's and is waited for.
     private var canGoOn: Bool { !creating && homeNode.restoring == nil && taking == nil }
+    /// The copy the people one wrote to gave back, being laid: its share of frames, the engine's own count.
+    private var keepLaying: Double? { if case .laying(let f) = keep.taking { return f } else { return nil } }
+    /// THE ONE SHARE OF THE COPY'S ROAD (09.10.2026): the light copy coming down is the first half, its laying the second; the parts
+    /// the people one wrote to hold count the first half while no light copy comes.
+    private var keepShare: Double? {
+        switch keep.taking {
+        case .fetching(let f): return f / 2
+        case .calling(let have, let need) where 0 < need: return min(1, Double(have) / Double(need)) / 2
+        case .laying(let f): return 0.5 + f / 2
+        default: return nil
+        }
+    }
+    /// THE TIME LEFT, MEASURED: the time the share done so far took, stretched over the rest -- said once a twentieth is done and
+    /// five seconds have passed; before that nothing is measured, and nothing is said.
+    private func timeLeft(_ f: Double) -> String? {
+        let spent = Date().timeIntervalSince(barSince)
+        guard 0.05 <= f, f < 1, 5 <= spent else { return nil }
+        let left = Int((spent * (1 - f) / f).rounded())
+        return Duration.seconds(left).formatted(Duration.UnitsFormatStyle(allowedUnits: [.hours, .minutes, .seconds], width: .abbreviated,
+                                                                          maximumUnitCount: 2).locale(MTLanguage.locale))
+    }
+    /// THE COPY KEPT BY THE PEOPLE ONE WROTE TO (MTKeeping, 08.10): with no node named, the words call the pipe of every slot; the
+    /// page shows the parts in hand, and the person may walk on at any moment -- the copy is laid whenever it stands, merged.
+    func takeFromKeepers() {
+        takingWord = "Asking the people you write to…"
+        step = 5
+        keep.onboardingWaits = true
+        // THE LIGHT COPY LETS THE PERSON IN (App: «once the light copy is laid»): the full copy follows from the keepers.
+        keep.onLight = {
+            guard MTKeeping.shared.onboardingWaits else { return }
+            MTKeeping.shared.onboardingWaits = false
+            onDone()
+        }
+        keep.takeBack { r in
+            guard MTKeeping.shared.onboardingWaits else { return }
+            MTKeeping.shared.onboardingWaits = false
+            if case .success = r { onDone() } else { refuse("No copy came back") { takeFromKeepers() } }
+        }
+    }
     var takingBack: some View {
         VStack(spacing: 16) {
             Spacer()
             Image(systemName: "arrow.down.circle.fill").font(.system(size: 46)).foregroundColor(Color.accentColor)
             Text(takingWord).font(.title3.bold()).foregroundColor(.white).multilineTextAlignment(.center)
-            if let f = homeNode.fetching ?? homeNode.restoring ?? cloudShare ?? taking {
-                ProgressView(value: f).padding(.horizontal, 24)
-                Text(verbatim: String(Int(f * 100)) + "%").foregroundColor(.gray).font(.caption)   // USER-DATA: a share
-            } else {
-                ProgressView()
+            if case .calling(let have, let need) = keep.taking, need > 0, keepLaying == nil {
+                Text("Parts in hand: \(have) of \(need)").foregroundColor(.gray).font(.caption)
+            }
+            // THE BAR FROM THE FIRST FRAME (the author's word 09.10.2026 11:3x MSK: «the progress bar must show at once, now it spins
+            // long before it comes; under it the approximate time of the restore»): nothing measured yet is a bar at zero, never a
+            // spinner, and the time left is said once it can be measured.
+            let f = homeNode.fetching ?? homeNode.restoring ?? cloudShare ?? taking ?? keepShare ?? 0
+            ProgressView(value: f).padding(.horizontal, 24)
+            Text(verbatim: String(Int(f * 100)) + "%").foregroundColor(.gray).font(.caption)   // USER-DATA: a share
+            if let left = timeLeft(f) {
+                Text("About \(left) left").foregroundColor(.gray).font(.caption)
             }
             Spacer()
             if canGoOn {
-                Button { retry = nil; onDone() } label: { Text("Continue without the copy") }
-                    .buttonStyle(MTLoginDoorStyle())
+                Button { retry = nil; keep.onboardingWaits = false; onDone() } label: {
+                    if keep.isTaking { Text("Continue") } else { Text("Continue without the copy") }
+                }
+                .buttonStyle(MTLoginDoorStyle())
+                if keep.isTaking {
+                    Text("Your history keeps coming back in the background.").foregroundColor(.gray).font(.caption).multilineTextAlignment(.center)
+                }
             }
         }
+        .onAppear { barSince = Date() }
     }
 
     /// THE DOORS (the author's design 29.09, his picture in Media): the glass icon, the title, and the Montana door pressed to
@@ -2547,6 +2603,9 @@ struct MontanaOnboardingView: View {
             Text("Sign in to Montana").font(.title.bold()).foregroundColor(.white).padding(.top, 22)
                 .multilineTextAlignment(.center)
             Text("Choose how to sign in").font(.body).foregroundColor(.gray).padding(.top, 6)
+            // THE VERSION AND THE BUILD ON THE DOOR (the author's word 09.10.2026 12:3x MSK: "write the version and the build number
+            // at once on the sign-in page"): the bundle's own numbers, so whoever signs in names what they hold.
+            Text(verbatim: AppVersion.full).font(.footnote.monospacedDigit()).foregroundColor(.gray).padding(.top, 4)   // USER-DATA: the version and the build, numbers
             Spacer(minLength: 0)
             VStack(spacing: 10) {
                 // THE NUMBER'S DOOR (Montana Business, the author's word 06.10.2026 11:4x MSK: «make the button of the sign-in by

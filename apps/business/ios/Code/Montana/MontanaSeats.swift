@@ -253,6 +253,7 @@ final class MTSeats: ObservableObject {
         MontanaNotify.forgetAllSuggestions()
         NotificationCenter.default.post(name: .montanaSeedForgotten, object: nil)
         SeedScope.reread(restored: false)
+        Task { @MainActor in MTCoinBook.reread() }   // the coins of the person who left leave memory with them (04.10)
     }
 
     /// A person on the shelf takes the seat: the checks first (the record and its words, the values), then the folders,
@@ -291,8 +292,8 @@ final class MTSeats: ObservableObject {
     /// the history file and the rows' journal, which are the lifted person's now.
     private static func liftMemory() {
         E2E.forgetDeviceTag()
-        SeedScope.reread(restored: false)
-        MTBoard.shared.reread()   // the wall loads on the forgotten seed's word, which is not spoken here: it reads the lifted wall
+        SeedScope.reread(restored: false)   // the wall too: it loads on the forgotten seed's word, which is not spoken here
+        Task { @MainActor in MTCoinBook.reread() }   // the lifted person's own coins, never the book of the one who left (04.10)
         MontanaAppleID.publish()
         NotificationCenter.default.post(name: .montanaSeedOpened, object: nil)
         MontanaWakePush.registerConvs()
@@ -504,6 +505,10 @@ final class MTSeats: ObservableObject {
     private func parkThenLift(from: String?, to target: String?, t0: Date) {
         let ground = target == nil && from != nil ? MTWallpaper.carry() : nil   // a seat emptied for a new person keeps the cover (03.10)
         if let from {
+            // The coins of the person leaving are on disk in their own folder before it moves (the coin audit's fourth point).
+            let keep = { MainActor.assumeIsolated { MTLocalCoinLedger.shared.writeWhole() } }
+            // MAIN-SAFE-SYNC: the main thread runs keep itself; only a caller off it waits, on main, which waits on nobody here.
+            if Thread.isMainThread { keep() } else { DispatchQueue.main.sync(execute: keep) }
             Self.stage("park")
             guard Self.park(from) else {
                 var b = Self.book(); b.step = nil; Self.write(b)
@@ -724,7 +729,7 @@ enum MTShelfPost {
             conv = met.ref; secret = met.secret
         }
         guard let secret, !conv.isEmpty else { return }
-        // Only what a person reads is receipted here: words. Media waits for its cargo at the lift, and a
+        // Only what a person reads is receipted here: words and coin letters. Media waits for its cargo at the lift, and a
         // service word (a mark, a name, a face, a read) asks no receipt of a person who is not on the screen.
         let words = !text.hasPrefix("\u{200B}") && !text.hasPrefix("\u{2063}")
         guard words else { return }
@@ -733,6 +738,12 @@ enum MTShelfPost {
             let k = await MTNodeWire.knockLetter(secret: secret, twinRef: p.twin, mid: rmid, plain: plain,
                                                  doors: MontanaWakePush.oneDoorPerNode(MontanaWakePush.orderedBases(for: "box")), silent: true)
             MontanaP2PTrace.mark("shelf_receipt", mid: mid, "seat=\(p.id) boxed=\(k.boxed ? 1 : 0) code=\(k.code)")
+        }
+        if let coin = MTCoinLetter.parse(text), coin.bound(to: mid),
+           let e = MontanaSeedKeys.entropyFrom(mnemonic: p.words), e.count == 32 {
+            let move = MTCoinEntry(k: .receive, c: coin.c, ref: "mid:" + mid, peer: conv, on: nil, at: Date().timeIntervalSince1970)
+            let laid = await MTCoinVault.lay([move], entropy: e)
+            MontanaP2PTrace.mark("shelf_coin", mid: mid, "seat=\(p.id) coins=\(coin.c) rows=\(laid)")
         }
     }
 

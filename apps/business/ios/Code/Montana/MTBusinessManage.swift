@@ -37,7 +37,7 @@ struct MTBizMovesSection: View {
                     }
                 }
             } header: { Text("New phones") } footer: {
-                Text("One touch moves the place to the new phone; the old phone loses it.")
+                Text("One touch moves the place to the new phone; the old phone loses it. The coin book does not move.")
             }
             .listRowBackground(MTGlassRowPlate())
             .mtBizRefused($refused)
@@ -95,7 +95,7 @@ struct MTBizMoveSheet: View {
                     }
                 }
             } footer: {
-                Text("Ask an administrator of your organization for an invitation, open it here and choose yourself. The administrator moves your place to this phone with one touch.")
+                Text("Ask an administrator of your organization for an invitation, open it here and choose yourself. The administrator moves your place to this phone with one touch. The coin book does not move: it comes back only from the 24 words.")
             }
             .listRowBackground(MTGlassRowPlate())
         }
@@ -184,12 +184,18 @@ enum MTBizJournalText {
         case "remove": return "Removed from the organization"
         case "rekey": return "Place moved to a new phone"
         case "revoke": return "Invitation revoked"
+        case "offer": return "Shop item"
         case "profile": return "Name and link"
         case "item": return "Product"
         case "node": return "Node"
         case "node_staff": return "People of the node"
         case "phone_bind": return "Number confirmed"
         case "invite_phone": return "Invitation by number"
+        case "salary": return "Salary"
+        case "pay": return "Payout"
+        case "receipt": return "Receipt"
+        case "redeem": return "Purchase"
+        case "fulfil": return "Handed over"
         case "open": return "Chat opened"
         case "letter": return "Letter"
         case "edit": return "Letter edited"
@@ -217,6 +223,9 @@ struct MTBizJournalSection: View {
     @ObservedObject private var biz = MTBusiness.shared
     var body: some View {
         Section {
+            if let v = biz.views[org], MTBusiness.boss(v.me.role) {
+                NavigationLink { MTBizPayrollPage(org: org) } label: { MTBizRowLabel(glyph: "tablecells.fill", title: "Payroll") }
+            }
             NavigationLink { MTBizJournalPage(org: org) } label: { MTBizRowLabel(glyph: "list.bullet.rectangle.portrait.fill", title: "Journal") }
         }
         .listRowBackground(MTGlassRowPlate())

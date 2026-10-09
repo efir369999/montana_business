@@ -11,7 +11,7 @@ import CryptoKit
 // Invariants:
 //   • Dequeue ONLY on a confirmed delivery receipt (confirmDelivered) — never on wire-sent.
 //   • Driven by peer reachability (.montanaP2PPeerUp) first, enqueue, and a foreground/backstop tick.
-//   • Dedup by mid at the receiver makes a re-send over any road harmless.
+//   • Dedup by mid at the receiver makes a re-send over any transport (direct/BLE) harmless.
 //   • The queue is sealed at rest (MontanaLocalVault / ChaCha20 under the device key).
 // Retention: the carriage (carryDays, at least 30 days — the author's word 07.10) is the ONE end of a
 // queued letter. Attempts do not kill: a letter the node has not taken knocks on the ramp
@@ -528,20 +528,19 @@ final class MontanaDeliveryEngine {
     func queuedMids(to ref: String, named: Set<String>) -> [String] {
         seen().filter { $0.to == ref }.compactMap { it in HeldLetters.key(it.mid).flatMap { named.contains($0) ? it.mid : nil } }
     }
-    /// A state letter of this kind is already on its way to this peer: the queue is the one
-    /// record of «in flight», so the sender asks it instead of keeping a second flag.
-    func hasPendingState(kind: Kind, to ref: String) -> Bool {
-        seen().contains { $0.to == ref && $0.kind == kind }
-    }
-    /// The tag a queued «about», «ground» or face letter to this peer carries: the same value waits, another replaces it.
+    /// The tag a queued state letter to this peer carries -- the words of «about», the ground's, the face's, the name itself: the
+    /// queue is the one record of «in flight»; the same value waits, another replaces it.
     /// THE FACE OBEYS THE SAME LAW (30.09): it asked only whether ANY face was on its way, so a new face waited behind
     /// an old one still in flight -- up to the hour an unanswered letter stays -- and the peer saw the old face first.
+    /// SO DOES THE NAME (09.10): a name typed on an empty phone before the copy came waited unreceipted in the queue, and the
+    /// name the copy laid stood behind it until that letter's hour was out.
     func pendingStateTag(kind: Kind, to ref: String) -> String? {
         guard let it = seen().last(where: { $0.to == ref && $0.kind == kind }) else { return nil }
         switch kind {
         case .about: return Announced.aboutTag(ofWord: it.text)
         case .ground: return Announced.groundTag(ofWord: it.text)
         case .picture: return Announced.faceTag(ofWord: it.text)
+        case .profile: return it.text.hasPrefix(nameMark) ? String(it.text.dropFirst(nameMark.count)) : nil
         default: return nil
         }
     }
@@ -803,6 +802,7 @@ final class MontanaDeliveryEngine {
             // ONE PAGE OF A WALL ON ITS WAY TO ONE PERSON (the critic's N1): a newer page of mine makes the queued one
             // meaningless — the last page stands, as the last read mark does.
             if MTBoard.isPage(text) { a.removeAll { $0.to == to && MTBoard.isPage($0.text) } }
+            if MTVPNWall.isPage(text) { a.removeAll { $0.to == to && MTVPNWall.isPage($0.text) } }   // the VPN wall's page, by the same law (29.09)
             // THE SAME STATE ALREADY ON ITS WAY IS NOT QUEUED AGAIN (25.09, the diary of T1: at one proof of a peer's build
             // four «about» letters and three 1.6 MB «ground» letters left within 60 ms). The senders ask the queue whether
             // their state waits, but they ask on their own thread while the queue writes on this line: every question before
@@ -909,7 +909,7 @@ final class MontanaDeliveryEngine {
                 // A receipted name or face is now what the peer's screen shows — the mark is written here.
                 if let conv = due { Announced.recordDelivered(text: letterText, to: conv) }
                 // A receipted page of my wall is the version that visitor holds (the critic's N5).
-                if let conv = due { MTBoard.delivered(text: letterText, to: conv) }
+                if let conv = due { MTBoard.delivered(text: letterText, to: conv); MTVPNWall.delivered(text: letterText, to: conv) }
                 // The tombstone is delivered — now the pipe can be buried for real.
                 if wasTombstone, let conv = due { MTPipeBook.forget(conv) }
                 // The letter is delivered — its media's shipping crate is of no use to anyone:
@@ -1329,6 +1329,12 @@ final class MontanaDeliveryEngine {
             MontanaP2PTrace.mark("same_ask_expired", "to=\(String(it.to.prefix(10)))")
             return
         }
+        // A KEEPING WORD LIVES WHILE IT CAN STILL MEAN SOMETHING (MTKeeping.expired): a question an hour, every other word two days.
+        if MTKeeping.expired(it.text, age: now - it.since) {
+            a.remove(at: i); save(a)
+            MontanaP2PTrace.mark("keep_expired", "to=\(String(it.to.prefix(10)))")
+            return
+        }
         if it.text.hasPrefix(ringMark), now - it.since > 45 {
             a.remove(at: i); save(a)
             MontanaP2PTrace.mark("ring_expired", "age=\(Int(now - it.since))s to=\(String(it.to.prefix(10)))")
@@ -1348,9 +1354,9 @@ final class MontanaDeliveryEngine {
         }
         // A letter ends by its CARRIAGE only. Death by try-count killed a letter in ~2.5 minutes: a
         // receiver opening the app later had no way left to get it.
-        // A TRANSFER LETTER AN OLDER BUILD QUEUED HAS NO END (the author's words 07.10.2026 18:4x MSK: «online or in cold storage,
-        // what difference -- they must leave»): it rides until the receiver's receipt, and no clock hands it back.
-        if now - it.since > carry, !mtRetiredLetter(it.text) {
+        // A COIN LETTER HAS NO END (the author's words 07.10.2026 18:4x MSK: «online or in cold storage, what difference -- they
+        // must leave»): its coins ride with it until the receiver's receipt, and no clock hands them back.
+        if now - it.since > carry, MTCoinLetter.parse(it.text) == nil {
             a.remove(at: i); save(a)
             let chat = it.chat, m = it.mid, tries = it.tries, age = Int(now - it.since)
             if isBurialWord(it.text) { MTPipeBook.forget(it.to) }   // the tombstone or the closing word expired — the pipe goes with it
@@ -1484,14 +1490,26 @@ final class MontanaDeliveryEngine {
         // the wire leg lived in the wake completion and never ran, so a receiver who came
         // online between windows waited for nothing (precedent 24.08: both phones on, the
         // letter parked in the box, nobody handed it over). The receiver door dedups by mid.
+        // 16.6.14 — A STANDING ROAD CARRIES, THE BELL ONLY WAKES (the author's word 04.09: the
+        // servers must not be the bottleneck). With a standing near channel every letter — the
+        // silent service word included — leaves by it and the bell stays quiet: a silent word is
+        // handed over the moment the channel took it (as it settled on the node's 200); a loud
+        // letter shows one checkmark and waits for the receipt. The bell rings only when no road
+        // of our own stands, or on the next attempt after it fell.
+        let standing = MontanaP2PNode.shared.hasStandingNearChannel(to)
         // A STATE LETTER WAITS FOR ITS RECEIPT LIKE A LOUD ONE (20.09): «in flight» is the queue's
         // record, and a name or a face settled on the node's word was out of the queue with no
         // mark written — every reciprocity found it neither receipted nor pending and sent it
         // again, once a second (the 09.09 storm, and again 18:26 today between T1 and T3). It
         // stays on the sparse rhythm until the peer's receipt or the hour's retirement.
         let settlesOnNode = it.silent && !it.kind.isState
-        if !it.silent { _ = MontanaP2PNode.shared.sendP2P(to: to, mid: m, text: text,
+        if !it.silent || standing { _ = MontanaP2PNode.shared.sendP2P(to: to, mid: m, text: text,
                                                                       quoteText: it.qt, quoteMid: it.qm, linkPreview: it.lp) }
+        if standing, MontanaP2PNode.shared.leftByStandingRoad(m) {
+            MontanaP2PTrace.markFolded("bell_quiet", "a standing road carried kind=\(MontanaNotify.kind(for: text)) to=\(String(to.prefix(10)))", window: 60, key: to)
+            if settlesOnNode { dequeue(m) } else if it.silent { noteNodeAck(m) } else { Task { await MainActor.run { self.store?.markSentByNode(chat, mid: m, why: "standing road") } } }
+            return
+        }
         // 16.6.17 (F2) — THE BELL IS DOSED ON THE FAST RAMP. The wire and the node try on every
         // attempt (1-2-4-8-16-20 s); the bell — a wake, glued by the node per mid — rang on every
         // one of the twelve too, and an undelivered service word to an offline correspondent

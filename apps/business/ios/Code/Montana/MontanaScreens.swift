@@ -94,6 +94,7 @@ struct ArchivedChatsView: View {
                     title: store.title(for: c),
                     photoURL: store.avatarFor(c), color: c.color, initial: store.initial(for: c),
                     canDeleteForBoth: MontanaConv.holds(c.convId ?? c.name),
+                    coinsTravel: store.coinsTravel(c),
                     onBoth: { store.deleteChat(c, forBoth: true); deletingChat = nil },
                     onMine: { store.deleteChat(c, forBoth: false); deletingChat = nil },
                     onCancel: { deletingChat = nil })
@@ -584,7 +585,7 @@ struct SeedShowView: View {
                         .font(.system(size: 72)).foregroundColor(Color.accentColor).padding(.top, 36)
                     Label("This information is for you only!", systemImage: "exclamationmark.triangle")
                         .font(.headline).foregroundColor(.white).padding(.top, 8)
-                    Text("This seed phrase unlocks access to your account")
+                    Text("This seed phrase unlocks access to your wallet")
                         .font(.title2.bold()).foregroundColor(.white)
                         .multilineTextAlignment(.center).padding(.horizontal, 24)
                     Button { ack1.toggle() } label: {

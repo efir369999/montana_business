@@ -54,12 +54,12 @@ enum MTRowLetter {
     // difference; a letter has one text and one place that says so.
     static func words(_ text: String) -> String {
         if text.hasPrefix(svc + "GE:") { return eventWords(text) ?? "" }
-        if MTLiveChatRow.of(text) { return String(localized: "Live chat is on", bundle: MTLanguage.bundle) }
+        if MTMoneyFlowRow.of(text) { return String(localized: "Money flow has begun", bundle: MTLanguage.bundle) }
         return MTWallCard.of(text)?.words ?? text.trimmingCharacters(in: .whitespacesAndNewlines)   // a post's card: the post's words, never its record
     }
-    /// A ROW OF THIS PHONE'S OWN, NOT A LETTER (a post's card, the live chat's beginning): no edit, no rung, nothing passed on.
+    /// A ROW OF THIS PHONE'S OWN, NOT A LETTER (a post's card, the money flow's beginning): no edit, no rung, nothing passed on.
     static func ownRow(_ text: String) -> Bool {
-        MTWallCard.of(text) != nil || MTLiveChatRow.of(text) || text.hasPrefix(svc + "GE:")
+        MTWallCard.of(text) != nil || MTMoneyFlowRow.of(text) || text.hasPrefix(svc + "GE:")
     }
 
     // ── THE CHESS WORDS OF A BANNER, one vocabulary for both doors (29.09) ──
@@ -70,11 +70,11 @@ enum MTRowLetter {
     /// holds one letter and no board -- the same words at both.
     /// THE BANNER'S WORDS, ONE FUNCTION (the author's word 06.10.2026 23:5x MSK: «natively, as in the chat -- any word, a transfer,
     /// a game -- one function»): what the banner of a letter says, for the app's banner door (MontanaNotify) and the extension alike
-    /// -- a game's invitation and end, a voice, a media letter, the words; nil -- a word of the machine, or a
+    /// -- a game's invitation and end, a coin letter's coins, a voice, a media letter, the words; nil -- a word of the machine, or a
     /// step of a game, that rings nothing.
     static func bannerWords(_ text: String, revealCaption: Bool = true) -> String? {
         if let chess = MTChessLetter.parse(text) { return chessBanner(chess) }
-        if retiredLetter(text) { return nil }   // an older build's transfer letter rings nothing here
+        if coinCount(text) != nil { return preview(text) }
         if text.hasPrefix("\u{200B}\u{200B}VC:") { return "🎤 " + String(localized: "Voice message", bundle: MTLanguage.bundle) }
         if text.hasPrefix("\u{200B}\u{200B}MD:") { return mediaWords(letter: text, revealCaption: revealCaption) }
         if let f = text.unicodeScalars.first, f.value == 0x200B || f.value == 0x2063 || f.value == 0x2064 { return nil }
@@ -125,16 +125,13 @@ enum MTRowLetter {
         (mine ? String(localized: "You play white", bundle: MTLanguage.bundle)
               : String(localized: "You play black", bundle: MTLanguage.bundle)) + " · " + chessControl(seconds)
     }
-    /// A LETTER OF A RETIRED KIND (the author's words 08.10.2026: the coins leave Montana wholly for their own app, Montana Wallet; the
-    /// Passwords app leaves Montana and Business «to the root»), read by its shape alone -- the one place of the rule, for the app
-    /// (mtRetiredLetter) and the extension alike: an older build's transfer letter (the coin glyph and a number, its machine line
-    /// last) and its shared secret (the key glyph and a title, its machine line last) are buried unread and ring nothing.
-    /// RETIRED-COIN-WORD RETIRED-SECRET-WORD
-    static func retiredLetter(_ text: String) -> Bool {
-        let last = text.split(separator: "\n", omittingEmptySubsequences: false).last
-        if text.hasPrefix("\u{1FA99} "), text.utf8.count <= 512 { return last?.hasPrefix("montana://coin/1/") == true }   // RETIRED-COIN-WORD
-        if text.hasPrefix("\u{1F511} "), text.utf8.count <= 65_536 { return last?.hasPrefix("montana://secret/1/") == true }   // RETIRED-SECRET-WORD
-        return false
+    /// THE COIN LETTER'S NUMBER (MTCoinLetter, 03.10), read here by its shape alone: this file is the extension's too, and the
+    /// extension does not carry the coin book. The first line is «🪙 N», the last the coin's machine line.
+    static func coinCount(_ text: String) -> Int? {
+        guard text.hasPrefix("🪙 "), text.utf8.count <= 512 else { return nil }
+        let parts = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts[1].hasPrefix("montana://coin/1/") else { return nil }   // NOT-UI: the coin letter's machine line
+        return Int(parts[0].dropFirst(2)).flatMap { 0 < $0 ? $0 : nil }
     }
     static func chessControl(_ seconds: Int) -> String {
         seconds == 0 ? String(localized: "No clock", bundle: MTLanguage.bundle) : "\(seconds / 60):00"
@@ -142,10 +139,12 @@ enum MTRowLetter {
 
     static func preview(_ text: String) -> String {
         if text.hasPrefix(svc + "GE:") { return eventWords(text) ?? "" }
-        if MTLiveChatRow.of(text) { return String(localized: "Live chat is on", bundle: MTLanguage.bundle) }
+        if MTMoneyFlowRow.of(text) { return "🪙 " + String(localized: "Money flow has begun", bundle: MTLanguage.bundle) }
         if let c = MTWallCard.of(text) { return String(localized: "Wall post", bundle: MTLanguage.bundle) + (c.words.isEmpty ? "" : " · " + c.words) }
         if MTChessLetter.parse(text) != nil { return "♟ " + String(localized: "Chess", bundle: MTLanguage.bundle) }
-        if retiredLetter(text) { return "" }   // an older build's transfer letter names nothing in a list
+        if let n = coinCount(text) { return "🪙 " + String(n) + " " + String(localized: "coins", bundle: MTLanguage.bundle) }
+        // A SECRET SHARED FROM PASSWORDS names nothing of itself in a list or a banner: no title, no content (06.10.2026).
+        if text.hasPrefix("🔑 "), text.contains("montana://secret/1/") { return "🔑 " + String(localized: "Shared password", bundle: MTLanguage.bundle) }   // NOT-UI: the letter's machine line
         if text.hasPrefix(svc + "VC:") { return "\u{1F3A4} " + String(localized: "Voice message", bundle: MTLanguage.bundle) }
         if text.hasPrefix(svc + "MC:") { return "\u{1F4DE} " + String(localized: "Missed call", bundle: MTLanguage.bundle) }
         if text.hasPrefix(svc + "CL:") {
@@ -219,11 +218,12 @@ enum MTRowLetter {
 /// older build loses nothing it had. The row names the post by the name the post was born with, so a post stands in the chat
 /// once whatever carries its word twice. COMPAT-LOCAL: the row never leaves this phone; a copy of it arriving from outside is a
 /// service word no build knows and is buried unread (mtUnknownServiceWord) -- the card is seen by the two whose wall and chat it is.
-/// THE LIVE CHAT BEGAN, A ROW OF THE CHAT (the author's word 03.10.2026 16:49 MSK: «a system message, as in chess»; 08.10.2026:
-/// the coins left for Montana Wallet, the live chat stays). This phone's own row, as a call's is: laid the moment the live chat
-/// comes on (ChatStore.appendLiveChat) and drawn as a card with the platform's glyph. COMPAT-LOCAL: it never leaves this phone; a copy arriving from outside is a service
+/// THE MONEY FLOW BEGAN, A ROW OF THE CHAT (the author's word 03.10.2026 16:49 MSK: «when the money flow is switched on, an
+/// active animation and a system message, as in chess, that the game of money flow has begun, with one turn of the coin»). This
+/// phone's own row, as a call's is: laid the moment the coin comes on (ChatStore.appendMoneyFlow) and drawn as the chess
+/// invitation's card, our coin turning once. COMPAT-LOCAL: it never leaves this phone; a copy arriving from outside is a service
 /// word no build knows and is buried unread (mtUnknownServiceWord).
-enum MTLiveChatRow {
+enum MTMoneyFlowRow {
     static let mark = "\u{200B}\u{200B}MF:"   // COMPAT-LOCAL: this phone's own row, never on the wire
     static func of(_ text: String) -> Bool { text.hasPrefix(mark) }
 }

@@ -23,6 +23,18 @@ enum MontanaPath {
     // being hidden behind a green indicator. One machine in a path is ONE carrier, not privacy.
     static let hopMin = 1
 
+    /// A near transport is a separate transport, not a short path.
+    ///
+    /// The constitution names it directly: "Near transports -- device to device by radio, a courier
+    /// carrying a device — are not short paths: they are **separate transports** with a plainly
+    /// stated property, and a person chooses a transport, never a degree of privacy.»
+    ///
+    /// So two devices reaching each other with their own radios -- over Bluetooth or inside one local
+    /// network -- speak directly, and that is not a bypass of the path rule but another transport with a
+    /// named property: someone standing nearby sees that two devices are talking. Over the internet
+    /// there is no such property and cannot be, so an envelope goes there only by a path.
+    static func isNear(_ ep: MontanaMeshEndpoint) -> Bool { !ep.isGlobal }
+
     /// How many DISTINCT owners stand among these entry points.
     ///
     /// Only those whose owner link the entry point itself gave at an introduction are counted. Ours,

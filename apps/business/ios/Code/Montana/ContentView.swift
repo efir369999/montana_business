@@ -162,10 +162,10 @@ final class MTTurnDrag: ObservableObject {
     /// and the music (the author's word 23.09: «the music tab as the calls»), the feed (25.09) and the network
     /// (the author's word 25.09: «a full page under the time panel, as the chats, the calls, the contacts and
     /// the feed») — the tab bar's tabs, moved up into the bar. One owner, read by the bar and the page.
-    /// THE NETWORK IS DISBANDED INTO WALLS (the author's word 29.09: «we have three new applications -- the VPN wall, the
-    /// mesh wall, the P2P wall -- walls common for publications»). All three are apps of their own now -- Montana VPN, Montana
-    /// Mesh and Montana P2P (the author's words 08.10.2026); the globe on the bar is the network's lamp alone.
-    enum Pane { case chats, groups, channels, contacts, calls, music, feed, gallery }   // the feed: the logo's page; the P2P wall: the globe's page; the gallery: the dynamic glyph's other page (25.09)
+    /// THE NETWORK IS DISBANDED INTO THREE WALLS (the author's word 29.09: «we have three new applications -- the VPN wall, the
+    /// mesh wall, the P2P wall -- walls common for publications»): the VPN wall under the globe, in the finger's row; the mesh
+    /// wall and the P2P wall are pages under the bar opened from the drawer.
+    enum Pane { case chats, groups, channels, contacts, calls, music, feed, vpn, mesh, p2p, gallery }   // the feed: the logo's page; the VPN wall: the globe's page; the gallery: the dynamic glyph's other page (25.09)
     var pane: Pane = .chats
     /// THE PAGES' GLYPHS, ONE OWNER FOR THE BAR AND THE DRAWER (the author's word 23.09: «I like the calls glyph: it is
     /// empty inside, only its outline is drawn — make the chats glyph the same, empty in the middle, its shape kept, and
@@ -184,7 +184,7 @@ final class MTTurnDrag: ObservableObject {
     /// settings and the profile are one open page at a time, risen over the tabs in the chat's own
     /// sliding container and closed by the cross or by the screen-edge swipe. The network left this slot
     /// for the finger's row (the author's word 25.09): it is a page under the bar, as the calls are.
-    enum Page: String, Identifiable { case settings, profile, card, birth, business, notifications; var id: String { rawValue } }   // birth: one more person of Montana, from the drawer's plus
+    enum Page: String, Identifiable { case settings, profile, card, birth, business, notifications, keeping; var id: String { rawValue } }   // birth: one more person of Montana, from the drawer's plus
     var overlayPage: Page?
     /// The document page over everything (the author's word 19.09): the whole screen, above the tabs and the open chat.
     var docPage: MTDocOpen?
@@ -202,6 +202,9 @@ final class MTTurnDrag: ObservableObject {
     /// preview's cross and checkmark. The slot of the document and the place is its.
     var chatWall: MTWallOpen?
     var chessPage: MTChessOpen?
+    var walletPage: MTPageFlag?
+    /// PASSWORDS (the author's word 06.10.2026 17:4x MSK): the person's secrets, a page of its own over the tabs (MTPasswordsPage).
+    var passwordsPage: MTPageFlag?
     var settingsShown: Bool {
         get { overlayPage == .settings }
         set { if newValue { overlayPage = .settings } else if overlayPage == .settings { overlayPage = nil } }
@@ -235,8 +238,8 @@ final class MTTurnDrag: ObservableObject {
     /// the contacts, the calls, THE FEED under the logo between them and the chats (the author's word 25.09: «the feed page as
     /// whole as the chats, the calls and the contacts, turning sideways as they do»), the chats, the dynamic glyph's page --
     /// the music while the glyph is the music's, else the gallery (25.09) -- and THE NETWORK under the globe at the row's end
-    /// (the author's word 25.09): its P2P wall since the VPN left for its own app (08.10.2026).
-    var turnOrder: [Pane] { [.contacts, .calls, .feed, .chats, mediaIsMusic ? .music : .gallery] }
+    /// (the author's word 25.09).
+    var turnOrder: [Pane] { [.contacts, .calls, .feed, .chats, mediaIsMusic ? .music : .gallery, .vpn] }
     /// THE PAGE'S OWN HOLDS (24.09): the chats page says whether something of its own stands open — the search, the
     /// selection, a row's menu, the gallery, the code page, the music's page, the deletion's sheet; nothing else
     /// knows them. The tabs do not turn while it holds.
@@ -244,7 +247,7 @@ final class MTTurnDrag: ObservableObject {
     /// May the tabs turn under the finger now: nothing over the tabs, nothing held by the page.
     var tabsMayTurn: Bool {
         overlayChat == nil && overlayPage == nil && docPage == nil && placeAsk == nil && placeOpen == nil
-            && chatWall == nil && chessPage == nil && !drawerOpen && !pageHolds
+            && chatWall == nil && chessPage == nil && walletPage == nil && passwordsPage == nil && !drawerOpen && !pageHolds
     }
     /// THE ROW'S LEFT END (the author's word 25.09: «a swipe past the contacts opens the side panel»): the pane is the first
     /// of the row and nothing stands to its left -- a stroke to the right there is the drawer's, not the rubber band's.
@@ -1414,9 +1417,10 @@ struct MTFeedGlyph: View {
         // THE LOGO ON THE SYSTEM'S GLASS (the author's word 26.09: «in the time panel too the new icon, without the black ground, on
         // the system's one-tone liquid glass»): under the native skin the gold logo stands on the tree's round glass plate
         // (MTGlassCirclePlate), as the app's icon now stands on the platform's glass; the black hexagon with its rim is the other skin's.
+        // THE ROUND FACE IN THE ROUND PLACE (the author's word 09.10.2026 13:5x MSK: «Montana_Business_Round.png for the round places
+        // -- the time panel»): his glass disc is the plate itself, filling the circle.
         if MontanaSkin.isNative {
-            MTGlassCirclePlate()
-                .overlay(MTAppCrest().padding(side / 4))
+            MTAppRound()
                 .frame(width: side, height: side)
         } else {
             MontanaHexagon().fill(Color.black)
@@ -1454,7 +1458,7 @@ struct MTCountBadge: View {
 
 /// One catalogue owns the tiles, search rows and destinations of the app library.
 enum MTApplication: String, CaseIterable, Identifiable {
-    case business, contacts, calls, feed, chats, groups, channels, music, gallery, chess, card, settings
+    case business, contacts, calls, feed, chats, groups, channels, music, gallery, chess, wallet, vpnWall, meshWall, p2pWall, card, passwords, settings
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -1466,18 +1470,23 @@ enum MTApplication: String, CaseIterable, Identifiable {
         case .channels: return String(localized: "Channels", bundle: MTLanguage.bundle)
         case .music: return String(localized: "Music", bundle: MTLanguage.bundle)
         case .gallery: return String(localized: "Gallery", bundle: MTLanguage.bundle)
+        case .vpnWall: return String(localized: "VPN wall", bundle: MTLanguage.bundle)
+        case .meshWall: return String(localized: "Mesh wall", bundle: MTLanguage.bundle)
+        case .p2pWall: return String(localized: "P2P wall", bundle: MTLanguage.bundle)
         case .card: return String(localized: "Business card", bundle: MTLanguage.bundle)
         case .business: return String(localized: "Organizations", bundle: MTLanguage.bundle)   // the person's organisations; the screen names no business (the author's word 06.10)
         case .settings: return String(localized: "Settings", bundle: MTLanguage.bundle)
+        case .passwords: return String(localized: "Passwords", bundle: MTLanguage.bundle)   // the author's word 06.10.2026 17:4x MSK
         case .chess: return String(localized: "Chess", bundle: MTLanguage.bundle)
+        case .wallet: return String(localized: "TimeCoin", bundle: MTLanguage.bundle)   // the author's word 04.10.2026 18:00 MSK: «rename the wallet TimeCoin»
         }
     }
     var group: MTLibraryGroup {
         switch self {
         case .contacts, .calls, .chats, .groups, .channels: return .communication
-        case .business, .feed, .card: return .montana   // beside the feed: publications common to people (29.09)
+        case .business, .feed, .card, .wallet, .vpnWall, .meshWall, .p2pWall: return .montana   // the walls beside the feed: publications common to people (29.09)
         case .music, .gallery, .chess: return .media
-        case .settings: return .utilities
+        case .settings, .passwords: return .utilities
         }
     }
     func badge(in store: ChatStore) -> Int {
@@ -1579,6 +1588,8 @@ struct MontanaSideDrawer: View {
         leave {
             switch app {
             case .chess: ui.chessPage = MTChessOpen()
+            case .wallet: ui.walletPage = MTPageFlag(id: "wallet")
+            case .passwords: ui.passwordsPage = MTPageFlag(id: "passwords")
             case .contacts: ui.pane = .contacts
             case .calls: ui.pane = .calls
             case .feed: ui.pane = .feed
@@ -1587,6 +1598,9 @@ struct MontanaSideDrawer: View {
             case .channels: ui.pane = .channels
             case .music: ui.askMusic()
             case .gallery: ui.askGallery()
+            case .vpnWall: MontanaVPNOpen.tap(); ui.pane = .vpn
+            case .meshWall: ui.pane = .mesh
+            case .p2pWall: ui.pane = .p2p
             case .card: ui.overlayPage = .card
             case .business: ui.overlayPage = .business
             case .settings: ui.settingsShown = true
@@ -2223,6 +2237,9 @@ struct MTShellPage: View {
 }
 
 struct MainTabView: View {
+    /// THE QUESTION OF THE COPY WITH CONTACTS (the author's word 08.10.2026 23:2x MSK: «on by default, and a question at the
+    /// opening»): asked once, in the platform's own alert, after the system's question of the notifications is settled.
+    @State private var keepAsk = false
     // THE TABS DO NOT WATCH THE CALL (22.09): the minimized pill watches it where it is drawn
     // (MTMinimizedCallLayer). Watched from here, every second of a call ran this body -- and this body
     // carries the chat list, the drawer, the open chat and every page over them.
@@ -2232,6 +2249,7 @@ struct MainTabView: View {
     init() { MontanaP2PTrace.markOnce("tabs_init") }   // measure: when SwiftUI began building the tabs
     @State private var ui = UIState()
     @StateObject private var store = ChatStore.one()   // one store for every window (ChatStore.one)
+    @ObservedObject private var vault = MTPasswordVault.shared   // a secret a correspondent shared, waiting to be saved
     @Environment(\.scenePhase) private var scenePhase
     // tick for sending scheduled messages (check once every 15s, on main)
     private let scheduleTick = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
@@ -2270,6 +2288,9 @@ struct MainTabView: View {
                     .zIndex(10)
             }
         }
+        .montanaPage(item: $ui.walletPage) { _ in MTWalletPage().environment(ui) }
+        .montanaPage(item: $ui.passwordsPage) { _ in MTPasswordsPage() }
+        .sheet(item: $vault.incoming) { secret in MTSecretSaveSheet(item: secret) }
         // THE DOCUMENT over everything — the whole screen; the edge swipe or the platform's close item.
         .montanaPage(item: $ui.docPage) { d in DocPreview(file: d.id, title: d.name) }
         // THE PLACE over everything: its own bar, its own cross, nothing of the chat above it.
@@ -2309,12 +2330,21 @@ struct MainTabView: View {
             // the first return from the background — after an update that is the whole first session. The sender
             // itself repeats nothing a peer has receipted.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { E2E.shared.broadcastAbout() }
+            // The network page's own store, read off the main thread now so the page under the bar is born holding
+            // its rows (22.09: the page used to unseal and decode every server inside the touch itself; since 25.09 it is
+            // built in the finger's row, warmed after the launch).
+            MontanaVPNStore.warm()
+            // The coin book too: read off the main thread from here, so the wallet opens on the frame of the touch (04.10 13:04).
+            MTLocalCoinLedger.warm()
             scheduleShareIngest()
             MontanaP2PTrace.mark("shares_done")
             askWhatIsUnasked()
         }
         .onChange(of: scenePhase) { _, p in
+            if p == .active { MTVPNWallMint.shared.count() }   // the VPN wall's seconds are counted at the return (03.10)
             if p == .active { MTNotifyAllowed.shared.read("active") }   // the person may have changed it in Settings (06.10)
+            if p == .active { MTCoinVault.shared.soon("active", after: 1) }   // the seed's other devices, gathered at the return (04.10)
+            if p == .active { Task { await MTTimeChainTip.shared.gather(why: "active") } }   // their tips first, in one round trip (04.10 16:34)
         }
         .onChange(of: scenePhase) { _, p in if p == .active {
             scheduleShareIngest(); store.retryPendingMedia(); MontanaDeliveryEngine.shared.drainAll()
@@ -2325,8 +2355,21 @@ struct MainTabView: View {
             E2E.shared.broadcastAvatar()
         } }
         .onReceive(NotificationCenter.default.publisher(for: .openChatRequest)) { _ in ui.pane = .chats }
+        .onReceive(NotificationCenter.default.publisher(for: .montanaOpenWallet)) { _ in ui.walletPage = MTPageFlag(id: "wallet") }
         .onReceive(NotificationCenter.default.publisher(for: .montanaOpenBusiness)) { _ in ui.overlayChat = nil; ui.overlayPage = .business }
+        .onReceive(NotificationCenter.default.publisher(for: .montanaAddPerson)) { _ in ui.walletPage = nil; ui.overlayPage = .birth }
         .onReceive(scheduleTick) { _ in store.fireDueScheduled() }
+        .onChange(of: scenePhase) { _, p in   // the system's question answered and the app back: the copy's question follows
+            if p == .active, MontanaSeed.hasSeed, !MTKeeping.told {
+                MontanaNotifyGate.systemStatus { st in if st != .notDetermined { keepAsk = true } }
+            }
+        }
+        .alert("Keep your copy with your contacts?", isPresented: $keepAsk) {
+            Button("Keep") { MTKeeping.shared.answer(keep: true) }
+            Button("Not now", role: .cancel) { MTKeeping.shared.answer(keep: false) }
+        } message: {
+            Text("Your copy is sealed with your 24 words and cut into parts. The people you write to keep the parts around a ring, each part with two of them: they see only its size and when it changes, and cannot open it. With your words on a new phone, the parts come back from them, and each of them gives back the conversation you share.")
+        }
     }
 
     /// The page the slot shows for each name. Hosted screens inherit no environment: the state
@@ -2349,6 +2392,12 @@ struct MainTabView: View {
                 NotificationsView()
                     .toolbar { ToolbarItem(placement: .topBarLeading) { MontanaCloseMark { ui.overlayPage = nil } } }
             }
+            // THE CROSSED GLYPH OF THE COPY'S PAGE (the author's word 08.10.2026 23:2x MSK): Data and Storage, where the copy with
+            // contacts is switched, its cross top left.
+            case .keeping: NavigationStack {
+                DataStorageView()
+                    .toolbar { ToolbarItem(placement: .topBarLeading) { MontanaCloseMark { ui.overlayPage = nil } } }
+            }
             }
         }
         .environment(ui).environmentObject(store)
@@ -2364,10 +2413,13 @@ struct MainTabView: View {
         guard MontanaSeed.hasSeed else { return }   // nobody is asked anything before they hold an identity
         // The core asks the system for nothing and starts first. Then exactly ONE question,
         // and it is the SYSTEM's own — notifications. Our explanatory pages are gone (the
-        // author's word 27.08); the local network is never touched: the mesh, the one thing that
-        // asked for it, left for its own app, Montana Mesh (the author's word 08.10.2026).
+        // author's word 27.08); the local network is not touched here at all: that prompt
+        // belongs to the mesh switch and rises only when a person turns it on.
         MontanaP2PNode.shared.autoStart()
         MTNotifyAllowed.shared.read("entry")   // asks again while the system holds no answer, not once for ever (06.10)
+        // The copy with contacts is asked after the system's own question, never beside it (two windows explain each other away).
+        guard !MTKeeping.told else { return }
+        MontanaNotifyGate.systemStatus { st in if st != .notDetermined { keepAsk = true } }
     }
 
     // pick up attachments from the «Share» menu after warming up the E2E session
@@ -2820,6 +2872,7 @@ struct ContactsTabView: View {
                 title: store.title(for: c),
                 photoURL: store.avatarFor(c), color: c.color, initial: store.initial(for: c),
                 canDeleteForBoth: MontanaConv.holds(c.convRef),
+                coinsTravel: store.coinsTravel(c),
                 onBoth: { delete(c, forBoth: true); deletingChat = nil },
                 onMine: { delete(c, forBoth: false); deletingChat = nil },
                 onCancel: { deletingChat = nil })
@@ -2848,8 +2901,13 @@ private struct MTPushedMark: ViewModifier {
 
 // ── "Calls" tab — call log ──
 struct CallRecord: Identifiable {
-    let id: String; let peer: String; let video: Bool; let incoming: Bool
+    let mid: String; let peer: String; let video: Bool; let incoming: Bool
     let dur: Int; let missed: Bool; let time: String; let at: Double
+    /// A CALL'S NAME IS ITS CONVERSATION AND ITS LETTER (09.10): a letter's name is one within its conversation, not across
+    /// them -- the archive names a restored letter by its second, side and text, so a transcript and its live twin hold the
+    /// same «arc:» letter, and the list that took the letter's name alone met it twice and died (T1 07:49:41Z, Wallet 10:
+    /// «Duplicate identifiers: call:arc:baf0637d…, call:arc:234a31f6…» the moment the Calls page opened).
+    var id: String { peer + "/" + mid }
 }
 
 /// THE CALLS UNDER THE BAR (the author's word 17.09): the log's rows in the list's own dress on the
@@ -2959,7 +3017,7 @@ struct CallsTabView: View {
     private func endSelecting() { withAnimation { selecting = false; selected.removeAll() } }
     private func dial(_ r: CallRecord, video: Bool) { MontanaCall.shared.startCall(peer: r.peer, device: "", video: video) }
     private func deleteSelected() {
-        for id in selected { store.deleteCallLog(id: String(id.dropFirst(Self.callMark.count))) }
+        for r in records where selected.contains(Self.callMark + r.id) { store.deleteCallLog(r) }
         endSelecting()
     }
     private func person(_ r: CallRecord) -> Chat {
@@ -2969,14 +3027,14 @@ struct CallsTabView: View {
     /// swipe from the left for a call on the calls page»): a tap on the row dials back, and the list offers nothing on that side.
     private func swipeTrailing(_ c: Chat) -> [SwipeTile] {
         guard let r = record(c) else { return [] }
-        return [SwipeTile(icon: "trash.fill", color: SwipeTile.glass) { store.deleteCallLog(id: r.id) }]
+        return [SwipeTile(icon: "trash.fill", color: SwipeTile.glass) { store.deleteCallLog(r) }]
     }
     /// The deeds of the menu about a call (a hold on the row): select, delete, block.
     private func deeds(_ c: Chat) -> [MTPersonMenu.Deed] {
         guard let r = record(c) else { return [] }
         let p = person(r)
         return [.init(title: "Select", icon: "checkmark.circle") { personMenu = nil; withAnimation { selecting = true; selected = [c.id] } },
-                .init(title: "Delete", icon: "trash", destructive: true) { personMenu = nil; store.deleteCallLog(id: r.id) },
+                .init(title: "Delete", icon: "trash", destructive: true) { personMenu = nil; store.deleteCallLog(r) },
                 store.isBlocked(r.peer)
                     ? .init(title: "Unblock", icon: "hand.raised.fill") { personMenu = nil; store.toggleBlocked(r.peer) }
                     : .init(title: "Block", icon: "hand.raised", destructive: true) { personMenu = nil; blockingChat = p }]
@@ -3115,6 +3173,8 @@ enum MTRefusal: String {
     case fileUnreadable = "the file cannot be read"
     /// The person stopped the send by hand.
     case byHand = "stopped by hand"
+    /// The room's radio cannot carry a file this size.
+    case pastTheRadio = "past the radio's measure"
     /// No member of the group could be handed a copy.
     case nobodyToCarry = "nobody to carry to"
     /// A copy of a group letter was refused by one of the words above.
@@ -3135,7 +3195,7 @@ let montanaRoomKey = "Montana"
 /// too: it stood for days and held 4 479 banners of the fleet on 04.10 (the author's word 23:46: «notifications come only when
 /// Montana is opened»).
 enum MTPlayQuiet {
-    static var held: Bool { MTChessGameScreen.shownGame != nil }
+    static var held: Bool { MTMoneyFlow.isOn(ChatStore.openConvNow ?? "") || MTChessGameScreen.shownGame != nil }
 }
 /// THE ROOM'S NAME ON THE SCREEN AND IN ITS BANNER (the author's word 03.10: «Montana with the crown emoji in front»): the one
 /// name a crown stands before by right -- every person's name loses a typed or sent crown (MTCrown).
@@ -3143,6 +3203,10 @@ let montanaRoomTitle = "\u{1F451} " + montanaRoomKey
 /// THE ROOM'S FACE IS THE APP'S ICON (the author's word 03.10: «the icon of the Montana updates chat as our app's icon»): the
 /// glass icon of the first screen, in the list, the chat's head and the banner alike.
 let montanaRoomFace = MTAppCrest.asset
+/// THE MESH WALL (the author's word 29.09: «the common mesh chat, pinned at the very top of the chats; everyone on the mesh is in it
+/// at once; it is called the Mesh wall and appears the moment the switch of visibility on the mesh is on»): the room of
+/// everyone on the mesh -- no address, no pipe; its words ride the radio (MTMeshRoom). The key is English and never translated.
+let meshRoomKey = "Mesh wall"   // COMPAT-LOCAL: a key of this device's list, never a word on the wire
 
 // The audio session for media playback. The app NEVER configured it, so the system default
 // mode applied — and that one is muted by the ring/silent switch: video and voice played
@@ -3765,6 +3829,7 @@ struct Chat: Identifiable, Codable, Equatable, Hashable {
         let full = (f + " " + l).trimmingCharacters(in: .whitespaces)
         if full.isEmpty && name == savedMessagesKey { return String(localized: "Saved Messages", bundle: MTLanguage.bundle) }
         if full.isEmpty && name == montanaRoomKey { return montanaRoomTitle }   // a name, not a word: the app's own
+        if full.isEmpty && name == meshRoomKey { return String(localized: "Mesh wall", bundle: MTLanguage.bundle) }
         // No name yet, and there is nothing else to fall back to: the key of a correspondence is
         // not a name of a person and is never shown as one. A neutral caption says exactly what is
         // known — somebody is there, and they have not said who.
@@ -3871,6 +3936,10 @@ let sameYesMark = "\u{200B}\u{200B}SY:"
 // the other side's history stays readable and its composer gives way to a note. An older build buries the word unread
 // ([P2P-COMPAT]) and the pipe dies by the word's term, as by a tombstone's.
 let pipeClosedMark = "\u{200B}\u{200B}PX:"
+// THE COPY KEPT BY THE PEOPLE ONE WRITES TO (the author's word 08.10.2026 20:3x, MTKeeping; Network «A copy kept by the people one
+// speaks with»): one word, JSON with «w» -- a question, a yes, a part, a keeper's «held», a release -- riding the correspondence,
+// and a call and its answer riding the pipe of a slot. Never a row; an older build buries it unread.
+let keepMark = "\u{200B}\u{200B}KP:"
 /// The words a pipe is buried with: the tombstone of «delete for both» and the orphan sweep's closing word. Each rides
 /// past the conversation's death, and its receipt — or its term — buries the pipe.
 func isBurialWord(_ text: String) -> Bool { text.hasPrefix(convDelMark) || text.hasPrefix(pipeClosedMark) }
@@ -3881,12 +3950,9 @@ let knownServiceTokens: Set<String> = ["VC:", "MD:", "RC:", "TY:", "WA:", "AP:",
                                        "RG:", "QC:", "DL:", "DF:", "CL:", "MC:", "WH:", "CG:", "PA:", "EX:",
                                        "ED:", "PN:", "SP:", "AB:", "WL:", "SM:", "SY:", "PX:", "PG:",
                                        "GR:",   // a group's invitation and letter (MTGroup, 05.10)
-                                       "BZ:"]   // an organisation's word of Montana Business (MTBusiness, 06.10)
-/// A LETTER OF A RETIRED KIND is buried unread here, as a newer build's word is, and never drawn as a person's words: the one
-/// rule is MTRowLetter.retiredLetter, the extension's as well.
-func mtRetiredLetter(_ text: String) -> Bool { MTRowLetter.retiredLetter(text) }
+                                       "BZ:",   // an organisation's word of Montana Business (MTBusiness, 06.10)
+                                       "KP:"]   // the copy kept by the people one writes to (MTKeeping, 08.10)
 func mtUnknownServiceWord(_ text: String) -> Bool {
-    if mtRetiredLetter(text) { return true }
     if text.hasPrefix("\u{200B}\u{200B}") {
         return !knownServiceTokens.contains(String(text.dropFirst(2).prefix(3)))
     }
@@ -3949,6 +4015,7 @@ func isControlMarker(_ text: String) -> Bool {
         || text.hasPrefix(MTBoard.mark)              // the wall's word (24.09): a post, a mark, a page — never a row
         || text.hasPrefix(sameAskMark) || text.hasPrefix(sameYesMark)   // one person, one conversation (24.09): never a row
         || text.hasPrefix(pipeClosedMark)            // the pipe closed at the other end (24.09): never a row
+        || text.hasPrefix(keepMark)                  // the keeping of a copy (08.10): never a row
 }
 // A service letter never rings: receipts, typing, drafts, profile (name/avatar/nick/card),
 // deletions, wake-handles ride SILENT pushes by construction — the server model sent them
@@ -4467,6 +4534,9 @@ struct MontanaDeleteChatSheet: View {
     let color: Color
     let initial: String
     let canDeleteForBoth: Bool
+    /// A coin letter of mine is on its way in this chat (ChatStore.coinsTravel): the sheet says so and offers no deletion -- the
+    /// erasure would take the letter off the wire with its coins (the coin audit's first point, 05.10.2026 21:4x MSK).
+    var coinsTravel = false
     var onBoth: () -> Void
     var onMine: () -> Void
     var onCancel: () -> Void
@@ -4474,8 +4544,8 @@ struct MontanaDeleteChatSheet: View {
     var body: some View {
         MontanaFaceSheet(photoURL: photoURL, color: color, initial: initial,
                          question: "Permanently delete the chat with \(title)?",
-                         note: nil,
-                         actions: (canDeleteForBoth ? [MontanaFaceSheet.Action(title: "Delete for me and them", destructive: true, act: onBoth)] : [])
+                         note: coinsTravel ? LocalizedStringKey("A coin letter in this chat is on its way. The chat can be deleted once it is delivered or its coins come back.") : nil,
+                         actions: coinsTravel ? [] : (canDeleteForBoth ? [MontanaFaceSheet.Action(title: "Delete for me and them", destructive: true, act: onBoth)] : [])
                              + [MontanaFaceSheet.Action(title: "Delete for me only", destructive: false, act: onMine)],
                          onCancel: onCancel)
     }

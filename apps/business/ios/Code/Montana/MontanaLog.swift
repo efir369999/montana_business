@@ -34,12 +34,13 @@ private func mtUnprotect(_ url: URL) {
 }
 enum MontanaLog {
     enum Channel {
-        case telemetry, trace
+        case telemetry, trace, vpn
 
         var file: String {
             switch self {
             case .telemetry: return "telemetry.log"
             case .trace:     return "p2p-trace.log"
+            case .vpn:       return "vpn.log"
             }
         }
         /// Half the budget: each channel keeps a current file and a previous one, so rotating here caps
@@ -48,6 +49,7 @@ enum MontanaLog {
             switch self {
             case .telemetry: return 512 * 1024
             case .trace:     return 512 * 1024
+            case .vpn:       return 256 * 1024
             }
         }
     }
@@ -65,13 +67,10 @@ enum MontanaLog {
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         mtExcludeFromBackup(d)
         mtUnprotect(d)
-        for ch in [Channel.telemetry, .trace] {
+        for ch in [Channel.telemetry, .trace, .vpn] {
             mtUnprotect(d.appendingPathComponent(ch.file))
             mtUnprotect(d.appendingPathComponent(ch.file + ".prev"))
         }
-        // THE TUNNEL'S DIARY LEFT WITH THE TUNNEL (08.10.2026: Montana VPN is its own app): an upgraded phone's last journal of it is
-        // no diary of this app -- it leaves here, never shipped. RETIRED-VPN-KEY
-        for n in ["vpn.log", "vpn.log.prev"] { try? FileManager.default.removeItem(at: d.appendingPathComponent(n)) }   // RETIRED-VPN-KEY
         return d
     }
     static func url(_ ch: Channel) -> URL { dir.appendingPathComponent(ch.file) }

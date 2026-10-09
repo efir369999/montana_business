@@ -20,21 +20,22 @@ extension View {
 }
 
 // SSOT transport identity ([I-10]/[C-1]): one place defines the transport categories, their display
-// symbol, and the classification. The radio left with the mesh for its own app, Montana Mesh (08.10.2026).
+// symbol, and the classification. Priority order is internet > Wi-Fi LAN > Bluetooth (see sendP2P).
 enum MontanaTransport: String {
-    case internet, wifi, cellular
-    // Canonical priority order, left -> right: internet > Wi-Fi > cellular.
-    static let ordered: [MontanaTransport] = [.internet, .wifi, .cellular]
-    // SF Symbol name. SINGLE source of the icon shape.
-    var sfSymbol: String {
+    case internet, wifi, cellular, bluetooth
+    // Canonical priority order, left -> right: internet > Wi-Fi LAN > cellular > Bluetooth.
+    static let ordered: [MontanaTransport] = [.internet, .wifi, .cellular, .bluetooth]
+    // SF Symbol name, or nil for the custom BluetoothGlyph shape. SINGLE source of the icon shape.
+    var sfSymbol: String? {
         switch self {
         case .internet: return "globe"
         case .wifi: return "wifi"
         case .cellular: return "cellularbars"
+        case .bluetooth: return nil
         }
     }
     /// Physical delivery medium of a message: cellular egress -> .cellular, else Wi-Fi -> .wifi.
-    /// (.internet is a header connectivity STATE, not a per-message transport.)
+    /// (.internet is a header connectivity STATE, not a per-message transport; BLE is tagged .bluetooth.)
     static func delivery(cellularEgress: Bool) -> MontanaTransport { cellularEgress ? .cellular : .wifi }
     /// Our own loopback is the only address a node must tell from a neighbour: it is the node itself.
     /// The value is defined by the standard and has nowhere to move (CONFIG-OK).
@@ -68,7 +69,15 @@ struct MontanaTransportIcon: View {
     var known: Bool = true
     var body: some View {
         let color: Color = tint ?? (known ? (on ? .green : .red) : Color(white: 0.45))
-        Image(systemName: transport.sfSymbol).font(.system(size: size, weight: .semibold)).foregroundColor(color)
+        Group {
+            if let sf = transport.sfSymbol {
+                Image(systemName: sf).font(.system(size: size, weight: .semibold)).foregroundColor(color)
+            } else {
+                BluetoothGlyph()
+                    .stroke(color, style: StrokeStyle(lineWidth: max(1.5, size * 0.13), lineCap: .round, lineJoin: .round))
+                    .frame(width: size * 0.72, height: size * 1.05)
+            }
+        }
     }
 }
 
@@ -252,6 +261,21 @@ enum MontanaOverlayProof {
         let ok = [UInt8](authPub).withUnsafeBufferPointer { pk in msg.withUnsafeBufferPointer { m in
             [UInt8](sig).withUnsafeBufferPointer { sg in mt_verify(pk.baseAddress, m.baseAddress, msg.count, sg.baseAddress) } } }
         return ok == 0
+    }
+}
+
+// Bluetooth logo (native look) — spine with two crossing wings, stroked blue.
+struct BluetoothGlyph: Shape {
+    func path(in r: CGRect) -> Path {
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: r.minX + x * r.width, y: r.minY + y * r.height) }
+        var path = Path()
+        path.move(to: p(0.28, 0.30))
+        path.addLine(to: p(0.72, 0.70))
+        path.addLine(to: p(0.50, 0.92))
+        path.addLine(to: p(0.50, 0.08))
+        path.addLine(to: p(0.72, 0.30))
+        path.addLine(to: p(0.28, 0.70))
+        return path
     }
 }
 

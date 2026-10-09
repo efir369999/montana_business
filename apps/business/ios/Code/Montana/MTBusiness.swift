@@ -118,11 +118,15 @@ struct MTBizLocal: Codable {
         var secret: String? = nil
         var id: String { org + ":" + member }
     }
+    struct Owed: Codable { var org: String; var member: String; var coins: UInt64; var at: Double }
     var routes: [String: String] = [:]
     var minted: [String: Minted] = [:]
     var joining: [String: Joining] = [:]
+    var paid: [String: String] = [:]
+    var owed: [String: Owed] = [:]
     var sent: [String: [String: String]] = [:]
     var met: [String: Double] = [:]
+    var receipted: [String] = []
     /// The heads a member last told this phone, per organisation (contract 1.1): what they hold, so only what they lack goes.
     struct Heads: Codable, Equatable { var r: String; var h: String }
     var heads: [String: [String: Heads]] = [:]
@@ -135,8 +139,11 @@ struct MTBizLocal: Codable {
         routes = try c.decodeIfPresent([String: String].self, forKey: .routes) ?? [:]
         minted = try c.decodeIfPresent([String: Minted].self, forKey: .minted) ?? [:]
         joining = try c.decodeIfPresent([String: Joining].self, forKey: .joining) ?? [:]
+        paid = try c.decodeIfPresent([String: String].self, forKey: .paid) ?? [:]
+        owed = try c.decodeIfPresent([String: Owed].self, forKey: .owed) ?? [:]
         sent = try c.decodeIfPresent([String: [String: String]].self, forKey: .sent) ?? [:]
         met = try c.decodeIfPresent([String: Double].self, forKey: .met) ?? [:]
+        receipted = try c.decodeIfPresent([String].self, forKey: .receipted) ?? []
         moves = try c.decodeIfPresent([String: Move].self, forKey: .moves) ?? [:]
         left = try c.decodeIfPresent([String: String].self, forKey: .left) ?? [:]
         firstDay = try c.decodeIfPresent([String].self, forKey: .firstDay) ?? []
@@ -188,6 +195,8 @@ final class MTBusiness: ObservableObject, @unchecked Sendable {
     static let linkVersion = "1"
     static let joinPath = "/b/join"
     static let backPath = "/b/back"
+    /// The name a coin letter of the Business wears (the core's coin_ref): one name for the whole life of a pay.
+    static let coinHead = "biz:"
     static let rosterByte: UInt8 = 0x52
 
     struct Chains { var r: Data; var h: Data }
@@ -204,6 +213,8 @@ final class MTBusiness: ObservableObject, @unchecked Sendable {
     /// The roads to the members as the queue last told them: whom a pipe speaks for, on the main thread.
     private(set) var roads: [String: String] = [:]
     private var redrawing = false   // a redraw on its way folds the ones asked meanwhile
+    private var settling = false
+    private var settleAgain = false
 
     // -- the Business's queue and what it alone holds ----------------------------------------------
     private let q = DispatchQueue(label: "montana.business", qos: .userInitiated)
@@ -397,6 +408,7 @@ final class MTBusiness: ObservableObject, @unchecked Sendable {
             local.joining[org] = nil
             local.minted = local.minted.filter { $0.value.org != org }
             local.moves = local.moves.filter { $0.value.org != org }
+            local.owed = local.owed.filter { $0.value.org != org }
             saveLocalQ()
             MontanaP2PTrace.mark("biz_left", "removed org=\(String(org.prefix(8)))")
         }
@@ -757,6 +769,7 @@ final class MTBusiness: ObservableObject, @unchecked Sendable {
             movedQ(org)
         } else if 0 < added {
             spreadQ(org)
+            chores.append { [weak self] in self?.settle() }
         }
         if lacks { tellBackQ(back, org: org, to: pipe) }
         return true
@@ -1021,12 +1034,138 @@ final class MTBusiness: ObservableObject, @unchecked Sendable {
         }
     }
 
+    // -- coins ---------------------------------------------------------------------------------
+
+    enum Verdict { case done, short, noRoad, refused }
+
+    /// The pair's chat a coin letter goes into: the row the list holds, or the conversation by its pipe.
+    @MainActor
+    static func pairChat(_ pipe: String, store: ChatStore) -> Chat {
+        store.listChats().first { ($0.convId ?? $0.name) == pipe }
+            ?? Chat(name: pipe, lastMessage: "", time: "", unread: 0, status: "", convId: pipe)
+    }
+
+    /// ONE PAY: the book is asked first -- a short balance refuses here and nothing is written or sent; the Pay record is
+    /// written on the queue, and its coin letter leaves at once under the Pay's own name (biz: and the record's id).
+    @MainActor
+    func pay(_ org: String, member: String, coins: UInt64, kind: Int, periodKey: UInt64, note: String) async -> Verdict {
+        guard let store = ChatStore.live, let p = pipe(of: member), MTCoinSend.canPay(Self.pairChat(p, store: store), store: store) else { return .noRoad }
+        guard 0 < coins, coins <= UInt64(max(0, MTCoinBook.ledger.balance)) else { return .short }
+        let ref: String? = await run {
+            let before = Set(self.drawn[org]?.pay.map(\.record) ?? [])
+            guard self.writeQ(org, MTBizCommand.pay(member: member, kind: kind, periodKey: periodKey, coins: coins, note: note)) != nil,
+                  let made = self.drawn[org]?.pay.first(where: { !before.contains($0.record) && $0.member == member }) else { return nil }
+            self.local.owed[made.coin_ref] = MTBizLocal.Owed(org: org, member: member, coins: coins, at: Date().timeIntervalSince1970)
+            self.saveLocalQ()
+            return made.coin_ref
+        }
+        guard let ref else { return .refused }
+        await settleNow()
+        return await run { self.local.paid[ref] != nil } ? .done : .refused
+    }
+
+    /// THE SALARY DUE, ONE TOUCH: the whole sum is asked of the book first; short, nothing is written.
+    @MainActor
+    func payDue(_ org: String) async -> Verdict {
+        guard let v = views[org] else { return .refused }
+        let total = v.due.reduce(UInt64(0)) { $0 + $1.coins }
+        guard 0 < total else { return .done }
+        guard total <= UInt64(max(0, MTCoinBook.ledger.balance)) else { return .short }
+        var last = Verdict.done
+        for d in v.due {
+            let one = await pay(org, member: d.member, coins: d.coins, kind: MTBizCommand.salaryPay, periodKey: d.period_key, note: "")
+            if one != .done { last = one }
+        }
+        return last
+    }
+
     /// AN ORDER (6.3): its key is drawn here (32 fresh bytes, the lane of its TimeChain), the record written, the people of its
     /// path told. Nil -- refused, nothing written.
     @MainActor
     func order(_ org: String, from: String, to: String, lines: [MTBizView.Line], voice: String?, text: String) async -> String? {
         guard let key = MTBizCore.random(32)?.montanaHexString else { return nil }
         return await write(org, MTBizCommand.order(key, from: from, to: to, lines: lines, voice: voice, text: text)) == nil ? nil : key
+    }
+
+    /// A PURCHASE FROM THE SHOP: the Redeem record in the buyer's own lane, and its coins to the owner as a coin letter under
+    /// the Redeem's name.
+    @MainActor
+    func buy(_ org: String, offer: MTBizView.Offer, qty: UInt32) async -> Verdict {
+        guard let v = views[org], let owner = v.owner, owner.member != v.me.member, let store = ChatStore.live,
+              let p = pipe(of: owner.member), MTCoinSend.canPay(Self.pairChat(p, store: store), store: store) else { return .noRoad }
+        let coins = offer.price * UInt64(qty)
+        guard 0 < coins, coins <= UInt64(max(0, MTCoinBook.ledger.balance)) else { return .short }
+        let ref: String? = await run {
+            guard let v = self.drawn[org] else { return nil }
+            let before = Set(v.redeems.map(\.record))
+            guard self.writeQ(org, MTBizCommand.redeem(item: offer.id, qty: qty, coins: coins)) != nil,
+                  let made = self.drawn[org]?.redeems.first(where: { !before.contains($0.record) && $0.member == v.me.member }) else { return nil }
+            let ref = Self.coinHead + made.record
+            self.local.owed[ref] = MTBizLocal.Owed(org: org, member: owner.member, coins: coins, at: Date().timeIntervalSince1970)
+            self.saveLocalQ()
+            return ref
+        }
+        guard let ref else { return .refused }
+        await settleNow()
+        return await run { self.local.paid[ref] != nil } ? .done : .refused
+    }
+
+    /// Coins to a colleague: the Messenger's own coin letter in the pair's chat (MTCoinSend.transfer).
+    @MainActor
+    func give(_ coins: Int, to member: String) -> Verdict {
+        guard let store = ChatStore.live, let p = pipe(of: member) else { return .noRoad }
+        let chat = Self.pairChat(p, store: store)
+        guard MTCoinSend.canPay(chat, store: store) else { return .noRoad }
+        guard 0 < coins, coins <= MTCoinBook.ledger.balance else { return .short }
+        return MTCoinSend.transfer(coins, to: chat, store: store) ? .done : .refused
+    }
+
+    /// WHAT IS OWED LEAVES, WHAT CAME IS RECEIPTED (asked by anyone, never waited for): see settleNow.
+    @MainActor
+    func settle() {
+        Task { @MainActor in await self.settleNow() }
+    }
+    /// A pay or a purchase written whose coin letter has not left goes now (a process that ended between the record and the
+    /// letter); a pay of mine whose coin letter my book credited is answered by a Receipt -- the keeper's own word that turns
+    /// «sent» into «confirmed». The letters are the main thread's (the store, the book), the records the queue's; one settling
+    /// at a time -- asked meanwhile, it runs once more after.
+    @MainActor
+    private func settleNow() async {
+        guard !settling else { settleAgain = true; return }
+        settling = true
+        defer { settling = false }
+        repeat {
+            settleAgain = false
+            guard let store = ChatStore.live else { return }
+            let owed = await run { self.local.owed.filter { self.local.paid[$0.key] == nil } }
+            var paid: [String: String] = [:]
+            for (ref, o) in owed {
+                guard let p = pipe(of: o.member), Int(clamping: o.coins) <= MTCoinBook.ledger.balance,
+                      let mid = MTCoinSend.send(Int(clamping: o.coins), to: Self.pairChat(p, store: store), store: store, name: ref) else { continue }
+                paid[ref] = mid
+                MontanaP2PTrace.mark("biz_pay", "letter=\(String(mid.prefix(10)))")   // never the sum: the diary leaves the phone
+            }
+            let book = MTLocalCoinLedger.shared.whole
+            var credited = Set<String>()
+            for p in Set(roads.values) {
+                for m in store.messages[p] ?? [] where !m.isFromMe {
+                    if let r = m.coinLetter?.r, r.hasPrefix(Self.coinHead), book.received(m.mid) { credited.insert(r) }
+                }
+            }
+            await run {
+                var moved = !paid.isEmpty
+                for (ref, mid) in paid {
+                    self.local.paid[ref] = mid
+                    self.local.owed[ref] = nil
+                }
+                for (org, v) in self.drawn {
+                    for p in v.pay where p.member == v.me.member && !p.confirmed && credited.contains(p.coin_ref) && !self.local.receipted.contains(p.record) {
+                        if self.writeQ(org, MTBizCommand.receipt(record: p.record)) != nil { self.local.receipted.append(p.record); moved = true }
+                    }
+                }
+                if moved { self.saveLocalQ() }
+            }
+        } while settleAgain
     }
 
     // -- measures ------------------------------------------------------------------------------

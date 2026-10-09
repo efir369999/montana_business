@@ -3,9 +3,11 @@
    phrase without a translation reaches every language unchanged. The source is English
    (Info.plist); this file is one language of it. */
 
+"NSBluetoothAlwaysUsageDescription" = "Montana 使用蓝牙让手机直接互联，在附近交换消息。";
 "NSCameraUsageDescription" = "Montana 使用相机为聊天拍摄照片和视频。";
 "NSContactsUsageDescription" = "MT Business 使用通讯录来显示哪些联系人已经在这里（号码以哈希形式与目录核对），让你在聊天中分享联系人，并按 @名称将你添加的人保存到通讯录。可在设置的隐私中关闭“同步联系人”。";
-"NSFaceIDUsageDescription" = "Montana 使用面容 ID 显示你的 24 个恢复词。";
+"NSFaceIDUsageDescription" = "Montana 使用面容 ID 打开你保存的密码，并显示你的 24 个恢复词。";
+"NSLocalNetworkUsageDescription" = "Montana 通过 Wi-Fi 直接连接你与对方的设备。该权限仅用于让手机在同一网络中找到彼此。";
 "NSLocationWhenInUseUsageDescription" = "MT Business 使用你的位置，以便你在聊天中发送它。如果工作聊天请求成员的位置并且你允许，在你是成员期间，你的位置会发送给该聊天的管理者——包括在后台（显示定位指示器），并在每个汇报时段内自动发送一次。你可以随时在聊天页面停止。";
 "NSMicrophoneUsageDescription" = "Montana 使用麦克风录制语音消息、视频和通话。";
 "NSSpeechRecognitionUsageDescription" = "Montana 仅在本设备上将你口述的订单转为文字；声音不会离开手机。";

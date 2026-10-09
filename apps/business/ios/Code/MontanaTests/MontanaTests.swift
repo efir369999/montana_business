@@ -130,6 +130,7 @@ final class MontanaTests: XCTestCase {
     func testOneWindowAndOneTolerance() throws {
         let at = Date(timeIntervalSince1970: 1_700_000_042)
         XCTAssertEqual(MTPipe.window(at), 1_700_000_042 / 60, "the window is seconds divided by the one length")
+        XCTAssertEqual(MontanaLocalTag.window(at), MTPipe.window(at), "an announce counts the same window")
         XCTAssertEqual(MontanaRendezvous.window(at), MTPipe.window(at), "a rendezvous counts the same window")
         XCTAssertEqual(MTPipe.windows(at: at), [MTPipe.window(at) - 1, MTPipe.window(at), MTPipe.window(at) + 1],
                        "the tolerance is the neighbouring windows, stated once")
@@ -841,30 +842,764 @@ final class MontanaNATTests: XCTestCase {
     }
 }
 
-// ── The overlay book, the local network kept out, and the copy's key. The VPN's and the mesh's own tests left with them for
-// their own apps, Montana VPN and Montana Mesh (the author's words 08.10.2026): they live in those forks beside the code they prove. ──
-final class MontanaNetworkTests: XCTestCase {
-    // A CALL REACHES INTO NO LOCAL NETWORK (the author's word 08.10.2026): a candidate on a private, link-local or mDNS address
-    // is dropped, a reflexive or relay one on a global address stays, and the address is read from its own field -- the srflx
-    // lines below carry a private raddr and stay. Rejects a reader that looks for a private address anywhere in the line (it
-    // drops the srflx) and one that reads another field (the host on 192.168.1.20 would stay). The person's node: a local
-    // address is never dialled.
-    func testTheLocalNetworkStaysOut() {
-        XCTAssertTrue(MontanaCall.onLocalNetwork(candidate: "candidate:1 1 udp 2122260223 192.168.1.20 54321 typ host generation 0"))
-        XCTAssertTrue(MontanaCall.onLocalNetwork(candidate: "a=candidate:2 1 udp 2122260223 fe80::1 54321 typ host"))
-        XCTAssertTrue(MontanaCall.onLocalNetwork(candidate: "candidate:3 1 udp 2122260223 4f1c0d2e.local 54321 typ host"))
-        XCTAssertFalse(MontanaCall.onLocalNetwork(candidate: "candidate:4 1 udp 1686052607 203.0.113.7 61000 typ srflx raddr 192.168.1.20 rport 54321"))
-        XCTAssertFalse(MontanaCall.onLocalNetwork(candidate: "candidate:5 1 udp 41885439 198.51.100.9 3478 typ relay raddr 203.0.113.7 rport 61000"))
-        let sdp = "v=0\r\na=candidate:1 1 udp 2122260223 10.0.0.5 5000 typ host\r\na=candidate:4 1 udp 1686052607 203.0.113.7 61000 typ srflx raddr 10.0.0.5 rport 5000\r\na=end-of-candidates"
-        XCTAssertEqual(MontanaCall.withoutLocalCandidates(sdp),
-                       "v=0\r\na=candidate:4 1 udp 1686052607 203.0.113.7 61000 typ srflx raddr 10.0.0.5 rport 5000\r\na=end-of-candidates")
-        XCTAssertTrue(MontanaHomeNode.onLocalNetwork("192.168.1.5"))
-        XCTAssertTrue(MontanaHomeNode.onLocalNetwork("[fd00::1]:8443"))
-        XCTAssertTrue(MontanaHomeNode.onLocalNetwork("mac.local"))
-        XCTAssertFalse(MontanaHomeNode.onLocalNetwork("203.0.113.7:8443"))
-        XCTAssertFalse(MontanaHomeNode.onLocalNetwork("node.example.org"))
-        XCTAssertNil(MontanaHomeNode.base("10.0.0.2"))
+// ── Stage 10 (§4.2): VPN subscription-link parser — deterministic unit tests ──
+final class MontanaVPNTests: XCTestCase {
+    // Real reference link from the Montana network snapshot (Amsterdam, VLESS Reality-Vision).
+    func testVlessRealityFromSnapshot() throws {
+        let link = "vless://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@192.0.2.3:443?flow=xtls-rprx-vision&type=tcp&headerType=none&security=reality&fp=safari&sni=www.example.com&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0123456789abcdef#Amsterdam Montana 1"
+        let c = try XCTUnwrap(MontanaVPNParse.parse(link), "vless Reality parse")
+        XCTAssertEqual(c.proto, .vless)
+        XCTAssertEqual(c.host, "192.0.2.3")
+        XCTAssertEqual(c.port, 443)
+        XCTAssertEqual(c.uuidOrPassword, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")
+        XCTAssertEqual(c.flow, "xtls-rprx-vision")
+        XCTAssertEqual(c.security, "reality")
+        XCTAssertEqual(c.sni, "www.example.com")
+        XCTAssertEqual(c.fingerprint, "safari")
+        XCTAssertEqual(c.publicKey, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        XCTAssertEqual(c.shortId, "0123456789abcdef")
+        XCTAssertEqual(c.name, "Amsterdam Montana 1")
     }
+
+    func testXrayOutboundReality() throws {
+        let link = "vless://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@192.0.2.3:443?flow=xtls-rprx-vision&type=tcp&security=reality&fp=safari&sni=www.example.com&pbk=PBK&sid=SID#N"
+        let c = try XCTUnwrap(MontanaVPNParse.parse(link))
+        let ob = MontanaXrayConfig.outbound(c)
+        XCTAssertEqual(ob["protocol"] as? String, "vless")
+        let stream = try XCTUnwrap(ob["streamSettings"] as? [String: Any])
+        XCTAssertEqual(stream["security"] as? String, "reality")
+        let reality = try XCTUnwrap(stream["realitySettings"] as? [String: Any])
+        XCTAssertEqual(reality["serverName"] as? String, "www.example.com")
+        XCTAssertEqual(reality["publicKey"] as? String, "PBK")
+        let vnext = try XCTUnwrap((ob["settings"] as? [String: Any])?["vnext"] as? [[String: Any]])
+        let user = try XCTUnwrap((vnext.first?["users"] as? [[String: Any]])?.first)
+        XCTAssertEqual(user["flow"] as? String, "xtls-rprx-vision")
+    }
+
+    func testTrojanParse() throws {
+        let c = try XCTUnwrap(MontanaVPNParse.parse("trojan://secretpw@1.2.3.4:8443?security=tls&sni=example.com#Node"))
+        XCTAssertEqual(c.proto, .trojan)
+        XCTAssertEqual(c.uuidOrPassword, "secretpw")
+        XCTAssertEqual(c.port, 8443)
+        XCTAssertEqual(c.sni, "example.com")
+    }
+
+    func testMalformedRejected() {
+        XCTAssertNil(MontanaVPNParse.parse("https://example.com"))
+        XCTAssertNil(MontanaVPNParse.parse("vless://"))
+        XCTAssertNil(MontanaVPNParse.parse("garbage"))
+    }
+
+    func testParseManyMultiline() {
+        let two = """
+        vless://aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@192.0.2.3:443?security=reality&pbk=A&sid=B#AMS
+        trojan://pw@5.6.7.8:443?security=tls#TRJ
+        """
+        XCTAssertEqual(MontanaVPNParse.parseMany(two).count, 2)
+    }
+
+    // The shape a Reality-xhttp plan hands out (measured 22.09 on a live subscription): path, mode and the
+    // json "extra" ride the link and must reach the engine as xhttpSettings.
+    func testVlessXhttpTransport() throws {
+        let extra = "{\"xmux\":{\"maxConcurrency\":\"16-32\"},\"xPaddingBytes\":\"333-1777\"}"
+        let enc = extra.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let link = "vless://11111111-2222-3333-4444-555555555555@203.0.113.7:48991?encryption=none&type=xhttp&path=%2F&mode=auto&extra=\(enc)&security=reality&sni=yahoo.com&fp=firefox&pbk=PBK#Auto"
+        let c = try XCTUnwrap(MontanaVPNParse.parse(link))
+        XCTAssertEqual(c.network, "xhttp")
+        XCTAssertEqual(c.path, "/")
+        XCTAssertEqual(c.mode, "auto")
+        XCTAssertEqual(c.extra, extra)
+        XCTAssertEqual(c.fingerprint, "firefox")
+        XCTAssertTrue(c.shortId.isEmpty)
+        let stream = try XCTUnwrap(MontanaXrayConfig.outbound(c)["streamSettings"] as? [String: Any])
+        let xh = try XCTUnwrap(stream["xhttpSettings"] as? [String: Any])
+        XCTAssertEqual(xh["path"] as? String, "/")
+        XCTAssertEqual(xh["mode"] as? String, "auto")
+        let xmux = try XCTUnwrap((xh["extra"] as? [String: Any])?["xmux"] as? [String: Any])
+        XCTAssertEqual(xmux["maxConcurrency"] as? String, "16-32")
+        // The link survives a round trip through its own serializer.
+        let back = try XCTUnwrap(MontanaVPNParse.parse(MontanaVPNParse.serialize(c)))
+        XCTAssertEqual(back.extra, extra); XCTAssertEqual(back.mode, "auto"); XCTAssertEqual(back.path, "/")
+    }
+
+    // The JSON body a panel serves as an array of whole engine configs: the "proxy" outbound is the server,
+    // its remarks are the name, and a config without a server we speak is skipped, not fatal.
+    func testSubscriptionEngineJson() throws {
+        let body = """
+        [{"remarks":"Netherlands","outbounds":[{"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.7","port":48992,"users":[{"id":"11111111-2222-3333-4444-555555555555","flow":"xtls-rprx-vision","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"cdn8-68.yahoo.com","publicKey":"PBK","fingerprint":"firefox"}}},{"tag":"direct","protocol":"freedom"}]},
+         {"remarks":"Auto","outbounds":[{"tag":"proxy","protocol":"vless","settings":{"vnext":[{"address":"203.0.113.7","port":48991,"users":[{"id":"11111111-2222-3333-4444-555555555555","encryption":"none"}]}]},"streamSettings":{"network":"xhttp","security":"reality","realitySettings":{"serverName":"cdn3-25.yahoo.com","publicKey":"PBK","fingerprint":"firefox"},"xhttpSettings":{"mode":"auto","host":"","path":"/","extra":{"xmux":{"maxConcurrency":"16-32"}}}}}]},
+         {"remarks":"Broken","outbounds":[{"tag":"direct","protocol":"freedom"}]}]
+        """
+        let list = MontanaVPNSubscription.parseBody(Data(body.utf8))
+        XCTAssertEqual(list.count, 2)
+        XCTAssertEqual(list[0].name, "Netherlands"); XCTAssertEqual(list[0].flow, "xtls-rprx-vision"); XCTAssertEqual(list[0].port, 48992)
+        XCTAssertEqual(list[1].network, "xhttp"); XCTAssertEqual(list[1].mode, "auto"); XCTAssertEqual(list[1].sni, "cdn3-25.yahoo.com")
+        XCTAssertTrue(list[1].extra?.contains("16-32") == true)
+    }
+
+    // The two text bodies: a base64 blob of links, and plain text with `#profile-*` header lines that are not servers.
+    func testSubscriptionTextBodies() {
+        let links = "vless://11111111-2222-3333-4444-555555555555@203.0.113.7:443?security=reality&pbk=A&sid=B#One\ntrojan://pw@203.0.113.8:443?security=tls#Two"
+        let blob = Data(links.utf8).base64EncodedString()
+        XCTAssertEqual(MontanaVPNSubscription.parseBody(Data(blob.utf8)).count, 2)
+        let plain = "\r\n#profile-update-interval: 1\r\n#profile-title: Plan\r\n" + links + "\r\n"
+        XCTAssertEqual(MontanaVPNSubscription.parseBody(Data(plain.utf8)).count, 2)
+        XCTAssertNotNil(MontanaVPNSubscription.isSubscriptionURL("https://example.org/sub/abc#Name"))
+        XCTAssertEqual(MontanaVPNSubscription.isSubscriptionURL("https://example.org/sub/abc#Name")?.fragment, nil)
+        XCTAssertNil(MontanaVPNSubscription.isSubscriptionURL("vless://x@1.2.3.4:443"))
+    }
+
+    // The headers a panel writes beside the body: the title in its base64 form, the plan's counters.
+    func testSubscriptionHeaders() throws {
+        let resp = try XCTUnwrap(HTTPURLResponse(url: URL(string: "https://example.org/sub")!, statusCode: 200, httpVersion: nil,
+                                                 headerFields: ["profile-title": "base64:bWF4aW11bS12cG4uY29t",
+                                                                "subscription-userinfo": "upload=0; download=40333815636; total=0; expire=1820218794"]))
+        XCTAssertEqual(MontanaVPNSubscription.headerText(resp, "profile-title"), "vpn.example")
+        let ui = MontanaVPNSubscription.userinfo(MontanaVPNSubscription.headerText(resp, "subscription-userinfo"))
+        XCTAssertEqual(ui["download"], 40333815636); XCTAssertEqual(ui["total"], 0); XCTAssertEqual(ui["expire"], 1820218794)
+        XCTAssertEqual(MontanaVPNSubscription.FetchError.status(502).label, "HTTP 502")
+    }
+
+    // The probe config is the outbound and nothing else: no inbound, no routing, no dns -- those belong to the
+    // tunnel, not to a measurement, and the engine refuses a config that carries them into a probe.
+    func testProbeConfigIsOutboundOnly() throws {
+        let link = "vless://11111111-2222-3333-4444-555555555555@203.0.113.7:48991?encryption=none&type=xhttp&path=%2F&mode=auto&security=reality&sni=yahoo.com&fp=firefox&pbk=PBK#Auto"
+        let c = try XCTUnwrap(MontanaVPNParse.parse(link))
+        let text = try XCTUnwrap(MontanaVPNDelay.probeConfig(c))
+        let j = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertNil(j["inbounds"])
+        XCTAssertNil(j["routing"])
+        XCTAssertNil(j["dns"])
+        let outs = try XCTUnwrap(j["outbounds"] as? [[String: Any]])
+        XCTAssertEqual(outs.count, 2)
+        XCTAssertEqual(outs[0]["tag"] as? String, "proxy")
+        XCTAssertEqual(outs[1]["protocol"] as? String, "freedom")
+    }
+
+    // The interface the measurement binds to is never a tunnel: a number taken inside our own tunnel
+    // is the tunnel's, not the server's (measured 22.09: 0 ms to every distance alike).
+    func testDelayBindsToAPhysicalInterface() {
+        let n = MontanaVPNDelay.physicalInterface()
+        XCTAssertFalse(n.hasPrefix("utun"))
+        XCTAssertFalse(n.hasPrefix("ipsec"))
+        XCTAssertFalse(n.hasPrefix("lo"))
+    }
+
+    // ── 29.09: every protocol the engine speaks, and a row for what it does not ──
+
+    // Hysteria 2 in the link's own words reaches the engine's: auth, the salamander mask, the hopping ports, the bandwidth.
+    // The permutation: the same link without obfs and ports carries no finalmask at all, and hy2:// with a path before the
+    // query and no port is the same server on 443. Rejects an implementation that writes the mask for every link.
+    func testHysteria2LinkToOutbound() throws {
+        let link = "hy2://secret%3Apass@hy.example.com:8443/?sni=cdn.example.com&insecure=1&obfs=salamander&obfs-password=salt&mport=20000-30000&up=100&down=200&pinSHA256=AB%3ACD#Fast"
+        let c = try XCTUnwrap(MontanaVPNParse.parse(link))
+        XCTAssertEqual(c.proto, .hysteria2); XCTAssertEqual(c.uuidOrPassword, "secret:pass"); XCTAssertEqual(c.port, 8443)
+        XCTAssertEqual(c.network, "hysteria"); XCTAssertEqual(c.security, "tls"); XCTAssertEqual(c.sni, "cdn.example.com")
+        XCTAssertEqual(c.allowInsecure, true); XCTAssertEqual(c.obfsPassword, "salt"); XCTAssertEqual(c.mport, "20000-30000")
+        XCTAssertEqual(c.pinSHA256, "AB:CD"); XCTAssertEqual(c.name, "Fast")
+        let ob = MontanaXrayConfig.outbound(c)
+        XCTAssertEqual(ob["protocol"] as? String, "hysteria")
+        let settings = try XCTUnwrap(ob["settings"] as? [String: Any])
+        XCTAssertEqual(settings["version"] as? Int, 2); XCTAssertEqual(settings["port"] as? Int, 8443)
+        let stream = try XCTUnwrap(ob["streamSettings"] as? [String: Any])
+        XCTAssertEqual(stream["network"] as? String, "hysteria")
+        XCTAssertEqual((stream["hysteriaSettings"] as? [String: Any])?["auth"] as? String, "secret:pass")
+        let tls = try XCTUnwrap(stream["tlsSettings"] as? [String: Any])
+        XCTAssertNil(tls["allowInsecure"]); XCTAssertEqual(tls["pinnedPeerCertSha256"] as? String, "AB:CD")
+        let mask = try XCTUnwrap(stream["finalmask"] as? [String: Any])
+        let udp = try XCTUnwrap((mask["udp"] as? [[String: Any]])?.first)
+        XCTAssertEqual(udp["type"] as? String, "salamander")
+        XCTAssertEqual((udp["settings"] as? [String: Any])?["password"] as? String, "salt")
+        let quic = try XCTUnwrap(mask["quicParams"] as? [String: Any])
+        XCTAssertEqual(quic["brutalUp"] as? String, "100 mbps"); XCTAssertEqual(quic["brutalDown"] as? String, "200 mbps")
+        XCTAssertEqual((quic["udpHop"] as? [String: Any])?["ports"] as? String, "20000-30000")
+        let bare = try XCTUnwrap(MontanaVPNParse.parse("hysteria2://pw@hy.example.com/?sni=x#Bare"))
+        XCTAssertEqual(bare.port, 443); XCTAssertNil(bare.obfsPassword)
+        let bareStream = try XCTUnwrap(MontanaXrayConfig.outbound(bare)["streamSettings"] as? [String: Any])
+        XCTAssertNil(bareStream["finalmask"])
+        let back = try XCTUnwrap(MontanaVPNParse.parse(MontanaVPNParse.serialize(c)))
+        XCTAssertEqual(back.obfsPassword, "salt"); XCTAssertEqual(back.mport, "20000-30000"); XCTAssertEqual(back.uuidOrPassword, "secret:pass")
+    }
+
+    // WireGuard: the private key, the peer, the interface IPs and the reserved bytes reach the engine's settings, and no
+
+    // THE VPN WALL (29.09): the page names the person's own hand-added servers and pasted plans and nothing that came by a
+    // wall; the version is the same for the same rows in any order; a page lands as the correspondent's servers under their
+    // key with identities kept; the word reads back whole; a row of another's wall is never chosen by itself.
+    func testVPNWallPageAndLanding() throws {
+        var mine = try XCTUnwrap(MontanaVPNParse.parse("vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443?type=tcp&security=reality&sni=a.example&pbk=PBK&sid=SID&flow=xtls-rprx-vision#Mine"))
+        mine.uid = "u1"
+        var theirs = try XCTUnwrap(MontanaVPNParse.parse("vless://11111111-2222-3333-4444-555555555555@5.6.7.8:443?type=ws&security=tls&sni=b.example&path=%2Fw#Theirs"))
+        theirs.uid = "u2"; theirs.subscription = MTVPNWall.planKey("a:peer")
+        var ofPlan = try XCTUnwrap(MontanaVPNParse.parse("trojan://pw@9.9.9.9:443?security=tls&sni=c.example#OfPlan"))
+        ofPlan.uid = "u3"; ofPlan.subscription = "https://plan.example/sub/x"
+        let plans = [MontanaVPNPlan(url: "https://plan.example/sub/x", title: "Paid", updatedAt: 1, count: 1),
+                     MontanaVPNPlan(url: "https://other.example/sub/y", title: "Carried", updatedAt: 1, count: 1, wallOf: "a:peer"),
+                     MontanaVPNPlan(url: MTVPNWall.planKey("a:peer"), title: "Peer", updatedAt: 1, count: 1, wallOf: "a:peer")]
+        let page = MTVPNWall.page(servers: [mine, theirs, ofPlan], plans: plans)
+        XCTAssertEqual(page.count, 2)
+        XCTAssertEqual(page.filter { $0.k == "s" }.map { $0.n }, ["Mine"])
+        XCTAssertEqual(page.filter { $0.k == "p" }.map { $0.l }, ["https://plan.example/sub/x"])
+        XCTAssertEqual(MTVPNWall.version(page), MTVPNWall.version(page.reversed()))
+        XCTAssertNotEqual(MTVPNWall.version(page), MTVPNWall.version(Array(page.prefix(1))))
+        let word = MTVPNWallWord(t: "page", v: MTVPNWall.version(page), rows: page)
+        let data = try JSONEncoder().encode(word)
+        let back = try JSONDecoder().decode(MTVPNWallWord.self, from: data)
+        XCTAssertEqual(back.rows, page); XCTAssertEqual(back.t, "page")
+        XCTAssertTrue(MTVPNWall.mark.hasPrefix("\u{200B}\u{200B}"))
+        // The landing: the correspondent's server row under their key, its identity kept from the last page by host, port and key.
+        let key = MTVPNWall.planKey("a:peer")
+        var old = try XCTUnwrap(MontanaVPNParse.parse(page[0].l ?? "")); old.uid = "kept"; old.subscription = key
+        let landed = MTVPNWall.servers(of: page, key: key, old: [old])
+        XCTAssertEqual(landed.count, 1); XCTAssertEqual(landed[0].subscription, key); XCTAssertEqual(landed[0].uid, "kept"); XCTAssertEqual(landed[0].name, "Mine")
+        XCTAssertTrue(MTVPNWall.cameByWall(landed[0]))
+        XCTAssertFalse(MTVPNWall.cameByWall(mine))
+        // A served outbound rides whole and lands as the engine's own row.
+        let outbound: [String: Any] = ["protocol": "vless",
+                                       "settings": ["vnext": [["address": "7.7.7.7", "port": 443, "users": [["id": "11111111-2222-3333-4444-555555555555", "encryption": "none"]]]]],
+                                       "streamSettings": ["network": "grpc", "security": "tls", "grpcSettings": ["serviceName": "svc"], "tlsSettings": ["serverName": "d.example"]]]
+        let servedJSON = String(data: try JSONSerialization.data(withJSONObject: outbound, options: [.sortedKeys]), encoding: .utf8)
+        let served = MTVPNWallRow(id: "j1", n: "Served", k: "s", l: "", j: servedJSON)
+        let fromJSON = MTVPNWall.servers(of: [served], key: key, old: [])
+        XCTAssertEqual(fromJSON.count, 1); XCTAssertEqual(fromJSON[0].network, "grpc"); XCTAssertNotNil(fromJSON[0].engineOutbound); XCTAssertEqual(fromJSON[0].name, "Served")
+    }
+
+    // THE VPN WALL CARRIED AS THE POSTS' WALL (29.09): a WireGuard row never rides (one device's key), the queue tells a page
+    // from an ask and a «got», and the empty page has one version -- a refused correspondent and an empty wall read alike.
+    // Rejects the page that carried every hand-added row, and a queue law that folded the «got» away with the pages.
+    func testVPNWallCarriesNoWireGuardAndTellsItsPage() throws {
+        var wg = try XCTUnwrap(MontanaVPNParse.parse("wireguard://PRIV%3D@wg.example:51820?publickey=PUB%3D&address=10.0.0.2%2F32#Home"))
+        wg.uid = "w1"
+        var tr = try XCTUnwrap(MontanaVPNParse.parse("trojan://pw@9.9.9.9:443?security=tls&sni=c.example#Row"))
+        tr.uid = "t1"
+        let page = MTVPNWall.page(servers: [wg, tr], plans: [])
+        XCTAssertEqual(page.map { $0.n }, ["Row"])
+        let pageWord = MTVPNWall.mark + String(data: try JSONEncoder().encode(MTVPNWallWord(t: "page", v: MTVPNWall.version(page), rows: page)), encoding: .utf8)!
+        let gotWord = MTVPNWall.mark + String(data: try JSONEncoder().encode(MTVPNWallWord(t: "got", v: "abc")), encoding: .utf8)!
+        let askWord = MTVPNWall.mark + String(data: try JSONEncoder().encode(MTVPNWallWord(t: "ask")), encoding: .utf8)!
+        XCTAssertTrue(MTVPNWall.isPage(pageWord)); XCTAssertFalse(MTVPNWall.isPage(gotWord)); XCTAssertFalse(MTVPNWall.isPage(askWord))
+        XCTAssertFalse(MTBoard.isPage(pageWord))
+        XCTAssertEqual(MTVPNWall.version([]), MTVPNWall.version([]))
+        XCTAssertNotEqual(MTVPNWall.version([]), MTVPNWall.version(page))
+    }
+
+    func testVPNWallOnlySharesACurrentLiveSubscription() throws {
+        var live = try XCTUnwrap(MontanaVPNParse.parse("trojan://pw@1.2.3.4:443?security=tls&sni=one.example#Live"))
+        var dead = try XCTUnwrap(MontanaVPNParse.parse("trojan://pw@1.2.3.5:443?security=tls&sni=two.example#Dead"))
+        live.uid = "live"; dead.uid = "dead"
+        let now = 2_000.0
+        let good = MontanaVPNPlan(url: "https://good.example/sub", title: "Good", updatedAt: now, count: 1)
+        let expired = MontanaVPNPlan(url: "https://expired.example/sub", title: "Expired", updatedAt: now, count: 1, expire: now - 1)
+        let unavailable = MontanaVPNPlan(url: "https://down.example/sub", title: "Down", updatedAt: now, count: 1, lastError: "unavailable")
+        live.subscription = good.url
+        dead.subscription = expired.url
+        let rows = MTVPNWall.page(servers: [live, dead], plans: [good, expired, unavailable], live: [live.id], now: now)
+        XCTAssertEqual(rows.filter { $0.k == "p" }.map(\.n), ["Good"])
+    }
+
+    // THE MESH WALL'S WORD (29.09): the cell's body reads back whole; the name and the words are cut at a letter's edge, never
+    // inside one; a body of another version or of empty words is no word; the row names its writer from its own ref. The
+    // permutation: the moment's four bytes are big-endian -- a reader that took them little-endian reads another moment -- and
+    // two words differing only in the run are two writers.
+    func testMeshRoomWordReadsBack() throws {
+        let run = Data([1, 2, 3, 4, 5, 6, 7, 8])
+        let w = MTMeshRoom.Word(run: run, at: 0x01020304, name: "Вера", text: "привет всем 👋")   // CYRILLIC-DATA-OK: a person's own words
+        let body = MTMeshRoom.encode(w)
+        XCTAssertEqual(body[body.startIndex], MTMeshRoom.version)
+        XCTAssertEqual(Array(body[9..<13]), [1, 2, 3, 4])
+        XCTAssertEqual(MTMeshRoom.decode(body), w)
+        var other = body; other[other.startIndex] = 2
+        XCTAssertNil(MTMeshRoom.decode(other))
+        XCTAssertNil(MTMeshRoom.decode(MTMeshRoom.encode(MTMeshRoom.Word(run: run, at: 1, name: "A", text: "   "))))
+        XCTAssertNil(MTMeshRoom.decode(Data([1, 2, 3])))
+        let long = String(repeating: "я", count: 700)   // CYRILLIC-DATA-OK: two bytes a letter
+        let cut = MTMeshRoom.cut(long, MTMeshRoom.wordBytes)
+        XCTAssertEqual(cut.utf8.count, MTMeshRoom.wordBytes); XCTAssertEqual(cut.count, MTMeshRoom.wordBytes / 2)
+        XCTAssertEqual(MTMeshRoom.cut("ab👋", 5), "ab")   // the four-byte letter does not fit whole: it is left out, never split
+        let ref = MTMeshRoom.ref(of: w)
+        XCTAssertEqual(MTMeshRoom.name(of: ref), "Вера")   // CYRILLIC-DATA-OK
+        XCTAssertNil(MTMeshRoom.name(of: "a:peer"))
+        XCTAssertEqual(MTMeshRoom.name(of: "mesh:0102:a:b"), "a:b")   // a name may hold the separator
+        XCTAssertNotEqual(MTMeshRoom.ref(of: MTMeshRoom.Word(run: Data(repeating: 9, count: 8), at: 1, name: "Вера", text: "x")), ref)   // CYRILLIC-DATA-OK
+        // THE CELL'S TAIL (the critic, 29.09): a long word ending in a full stop reads back whole from a cell nobody passed on,
+        // and from one a hop sealed -- the hop's seal and count are taken off by the mesh (MontanaBLEMesh.body), the zero by
+        // the room. Rejects the cell without its zero count: its last byte, a full stop, would be read as a count of 46 seals.
+        let long2 = MTMeshRoom.Word(run: run, at: 7, name: "A", text: String(repeating: "word ", count: 150) + "end.")
+        let bare = MTMeshRoom.cell(long2)
+        XCTAssertEqual(bare.last, 0)
+        XCTAssertEqual(MTMeshRoom.word(ofBody: MontanaBLEMesh.body(of: bare)), long2)
+        var hopped = MontanaBLEMesh.body(of: bare); hopped.append(Data(repeating: 7, count: 16)); hopped.append(1)
+        XCTAssertEqual(MTMeshRoom.word(ofBody: MontanaBLEMesh.body(of: hopped)), long2)
+        XCTAssertNil(MTMeshRoom.word(ofBody: MTMeshRoom.encode(long2)))
+        // A word's name is its content: the same word under another cell id is one row; another moment is another word.
+        XCTAssertEqual(MTMeshRoom.mid(of: long2), MTMeshRoom.mid(of: MTMeshRoom.decode(MTMeshRoom.encode(long2))!))
+        XCTAssertNotEqual(MTMeshRoom.mid(of: long2), MTMeshRoom.mid(of: MTMeshRoom.Word(run: run, at: 8, name: "A", text: long2.text)))
+    }
+
+    // THE MESH WALL'S ITEMS (29.09): the item's word reads back whole, bare and through a hop's seal; a size past the radio's
+    // measure and pieces that do not match the size are no word; the pieces laid in their order are the item's bytes again,
+    // and in another order are not; a piece past its count, a piece past its size and an ask past forty are refused or cut.
+    // Rejects a reader that took the size little-endian (another size, another count of pieces) and one that joined pieces
+    // by arrival rather than by index.
+    func testMeshRoomItemsReadBack() throws {
+        let run = Data([9, 8, 7, 6, 5, 4, 3, 2])
+        let data = Data((0 ..< 2500).map { UInt8($0 % 251) })
+        let m = MTMeshRoom.Media(kind: "aud", item: Data(repeating: 0xAB, count: 16), size: data.count, pieces: MTMeshRoom.pieceCount(data.count),
+                                 sha: Data(repeating: 1, count: 32), ext: "m4a", fileName: "", durMs: 4200)
+        let w = MTMeshRoom.Word(run: run, at: 0x0A0B0C0D, name: "Мира", text: "подпись")   // CYRILLIC-DATA-OK: a person's own words
+        let cell = MTMeshRoom.mediaCell(w, m)
+        XCTAssertEqual(cell.last, 0); XCTAssertEqual(cell.first, MTMeshRoom.mediaVersion)
+        let back = try XCTUnwrap(MTMeshRoom.media(ofBody: MontanaBLEMesh.body(of: cell)))
+        XCTAssertEqual(back.0, w); XCTAssertEqual(back.1, m); XCTAssertEqual(back.1.pieces, 3)
+        var hopped = MontanaBLEMesh.body(of: cell); hopped.append(Data(repeating: 5, count: 16)); hopped.append(1)
+        XCTAssertEqual(MTMeshRoom.media(ofBody: MontanaBLEMesh.body(of: hopped))?.1, m)
+        XCTAssertNil(MTMeshRoom.word(ofBody: MontanaBLEMesh.body(of: cell)))   // the word reader of version 1 does not take it
+        let big = MTMeshRoom.Media(kind: "vid", item: m.item, size: MTMeshRoom.itemMax + 1, pieces: MTMeshRoom.pieceCount(MTMeshRoom.itemMax + 1),
+                                   sha: m.sha, ext: "mov", fileName: "", durMs: 0)
+        XCTAssertNil(MTMeshRoom.media(ofBody: MTMeshRoom.mediaCell(w, big)))
+        let wrong = MTMeshRoom.Media(kind: "aud", item: m.item, size: data.count, pieces: 4, sha: m.sha, ext: "m4a", fileName: "", durMs: 0)
+        XCTAssertNil(MTMeshRoom.media(ofBody: MTMeshRoom.mediaCell(w, wrong)))
+        // The pieces: each reads back, and laid by index they are the item's bytes again.
+        var joined = Data()
+        for i in 0 ..< m.pieces {
+            let c = MTMeshRoom.pieceCell(item: m.item, index: i, count: m.pieces, bytes: MTMeshRoom.bytesOfPiece(data, i))
+            let p = try XCTUnwrap(MTMeshRoom.piece(ofBody: MontanaBLEMesh.body(of: c)))
+            XCTAssertEqual(p.item, m.item); XCTAssertEqual(p.index, i); XCTAssertEqual(p.count, m.pieces)
+            joined.append(p.bytes)
+        }
+        XCTAssertEqual(joined, data)
+        XCTAssertNotEqual(MTMeshRoom.bytesOfPiece(data, 1) + MTMeshRoom.bytesOfPiece(data, 0) + MTMeshRoom.bytesOfPiece(data, 2), data)
+        XCTAssertEqual(MTMeshRoom.bytesOfPiece(data, 2).count, 2500 - 2 * MTMeshRoom.pieceBytes)
+        XCTAssertNil(MTMeshRoom.piece(ofBody: MTMeshRoom.pieceCell(item: m.item, index: 3, count: 3, bytes: Data([1]))))
+        XCTAssertNil(MTMeshRoom.piece(ofBody: MTMeshRoom.pieceCell(item: m.item, index: 0, count: 1, bytes: Data(count: MTMeshRoom.pieceBytes + 1))))
+        XCTAssertNil(MTMeshRoom.piece(ofBody: MTMeshRoom.pieceCell(item: m.item, index: 0, count: MTMeshRoom.piecesMax + 1, bytes: Data([1]))))
+        // The ask: read back, cut at forty.
+        let a = try XCTUnwrap(MTMeshRoom.ask(ofBody: MTMeshRoom.askCell(item: m.item, missing: [2, 0, 1])))
+        XCTAssertEqual(a.item, m.item); XCTAssertEqual(a.missing, [2, 0, 1])
+        XCTAssertEqual(MTMeshRoom.ask(ofBody: MTMeshRoom.askCell(item: m.item, missing: Array(0 ..< 100)))?.missing.count, 40)
+        XCTAssertNil(MTMeshRoom.ask(ofBody: MTMeshRoom.askCell(item: m.item, missing: [])))
+    }
+
+    // THE ORDER OF THE PAGE (30.09): the person's own first -- pinned, then the rest of their own by name, the hand-added section
+    // among them -- then the walls in the chats' order (the freshest chat first, a correspondent's paid plan above their servers);
+    // the page of the wall names the pasted plans first. Rejected: an order that lets an unpinned plan of one's own sink below the
+    // walls (a wall is pinned at its arrival), and a hand-added section that stands after every wall.
+    func testVPNWallOrderFollowsTheChats() throws {
+        let own = MontanaVPNPlan(url: "https://mine.example/sub", title: "Mine", updatedAt: 1, count: 1, pinnedAt: 10)
+        let loose = MontanaVPNPlan(url: "https://loose.example/sub", title: "Aloose", updatedAt: 1, count: 1)
+        let freshPaid = MontanaVPNPlan(url: "https://fresh.example/sub", title: "Fresh paid", updatedAt: 1, count: 1, pinnedAt: 5, wallOf: "a:fresh")
+        let freshServers = MontanaVPNPlan(url: MTVPNWall.planKey("a:fresh"), title: "Fresh", updatedAt: 1, count: 1, pinnedAt: 9, wallOf: "a:fresh")
+        let oldServers = MontanaVPNPlan(url: MTVPNWall.planKey("a:old"), title: "Old", updatedAt: 1, count: 1, pinnedAt: 20, wallOf: "a:old")
+        let ordered = MontanaVPNPlans.ordered([loose, oldServers, freshServers, freshPaid, own], wallRank: ["a:fresh": 0, "a:old": 1])
+        XCTAssertEqual(ordered.map { $0.title }, ["Mine", "Aloose", "Fresh paid", "Fresh", "Old"])
+        XCTAssertEqual(MontanaVPNPlans.manualSlot(in: ordered, pinnedAt: nil), 2)
+        XCTAssertEqual(MontanaVPNPlans.manualSlot(in: ordered, pinnedAt: 15), 0)
+        XCTAssertEqual(MontanaVPNPlans.manualSlot(in: ordered, pinnedAt: 7), 1)
+        var server = try XCTUnwrap(MontanaVPNParse.parse("trojan://pw@9.9.9.9:443?security=tls&sni=c.example#Row"))
+        server.uid = "u9"
+        let page = MTVPNWall.page(servers: [server], plans: [own])
+        XCTAssertEqual(page.map { $0.k }, ["p", "s"])
+    }
+
+    // AN ENGINE-JSON PLAN'S ROW REACHES THE ENGINE WHOLE (29.09): the panel tuned every field of its outbound, and a row read into
+    // the record and written back lost every field the record has no name for. The tag is ours, the refused TLS key leaves, the
+    // rest is the panel's own words -- the gRPC mode and the pin as served.
+    func testEngineJSONRowIsServedWhole() throws {
+        let body = """
+        [{"remarks":"LTE Auto","outbounds":[{"tag":"cand-01","protocol":"vless","settings":{"vnext":[{"address":"1.2.3.4","port":443,"users":[{"id":"11111111-2222-3333-4444-555555555555","encryption":"none"}]}]},"streamSettings":{"network":"grpc","security":"tls","grpcSettings":{"serviceName":"x.y.v1.Service","mode":"gun","initial_windows_size":65536,"user_agent":"ua"},"tlsSettings":{"serverName":"lk.example.ru","fingerprint":"edge","allowInsecure":true,"pinnedPeerCertSha256":"AA:BB"}}},{"tag":"direct","protocol":"freedom"}]}]
+        """
+        let rows = MontanaVPNSubscription.parseBody(Data(body.utf8))
+        XCTAssertEqual(rows.count, 1)
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(row.proto, .vless); XCTAssertEqual(row.network, "grpc"); XCTAssertEqual(row.serviceName, "x.y.v1.Service")
+        XCTAssertEqual(row.host, "1.2.3.4"); XCTAssertEqual(row.name, "LTE Auto"); XCTAssertNotNil(row.engineOutbound)
+        let ob = MontanaXrayConfig.outbound(row)
+        XCTAssertEqual(ob["tag"] as? String, "proxy")
+        let stream = try XCTUnwrap(ob["streamSettings"] as? [String: Any])
+        let grpc = try XCTUnwrap(stream["grpcSettings"] as? [String: Any])
+        XCTAssertEqual(grpc["mode"] as? String, "gun"); XCTAssertEqual(grpc["initial_windows_size"] as? Int, 65536); XCTAssertEqual(grpc["user_agent"] as? String, "ua")
+        let tls = try XCTUnwrap(stream["tlsSettings"] as? [String: Any])
+        XCTAssertEqual(tls["pinnedPeerCertSha256"] as? String, "AA:BB"); XCTAssertEqual(tls["fingerprint"] as? String, "edge")
+        XCTAssertNil(tls["allowInsecure"])   // the engine refuses the key; the row verifies the certificate by the pin
+        // A row that came as a link carries no served outbound and is built from the record as before.
+        let link = try XCTUnwrap(MontanaVPNParse.parse("vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443?type=grpc&serviceName=x.y.v1.Service&security=tls&sni=lk.example.ru#L"))
+        XCTAssertNil(link.engineOutbound)
+        XCTAssertNil(MontanaXrayConfig.servedOutbound(link))
+        // A served outbound of another protocol than the record's is not trusted: the record decides.
+        var odd = row; odd.proto = .trojan
+        XCTAssertNil(MontanaXrayConfig.servedOutbound(odd))
+    }
+    // stream layer stands on it. Rejects an implementation that writes a TLS stream under a WireGuard outbound.
+    func testWireGuardLinkToOutbound() throws {
+        let link = "wireguard://cHJpdmF0ZUtleQ%3D%3D@wg.example.com:51820?publickey=cGVlcg%3D%3D&address=10.0.0.2%2F32,fd00%3A%3A2%2F128&reserved=1,2,3&mtu=1280&presharedkey=cHNr#WG"
+        let c = try XCTUnwrap(MontanaVPNParse.parse(link))
+        XCTAssertEqual(c.proto, .wireguard); XCTAssertEqual(c.uuidOrPassword, "cHJpdmF0ZUtleQ==")
+        XCTAssertEqual(c.publicKey, "cGVlcg=="); XCTAssertEqual(c.localIPs, "10.0.0.2/32,fd00::2/128"); XCTAssertEqual(c.mtu, 1280)
+        let ob = MontanaXrayConfig.outbound(c)
+        XCTAssertEqual(ob["protocol"] as? String, "wireguard"); XCTAssertNil(ob["streamSettings"])
+        let settings = try XCTUnwrap(ob["settings"] as? [String: Any])
+        XCTAssertEqual(settings["address"] as? [String], ["10.0.0.2/32", "fd00::2/128"])
+        XCTAssertEqual(settings["reserved"] as? [Int], [1, 2, 3]); XCTAssertEqual(settings["mtu"] as? Int, 1280)
+        let peer = try XCTUnwrap((settings["peers"] as? [[String: Any]])?.first)
+        XCTAssertEqual(peer["publicKey"] as? String, "cGVlcg=="); XCTAssertEqual(peer["endpoint"] as? String, "wg.example.com:51820")
+        XCTAssertEqual(peer["preSharedKey"] as? String, "cHNr")
+        XCTAssertNil(MontanaVPNParse.parse("wg://key@wg.example.com:51820#NoPeer"))   // a peer without its public key is no server
+    }
+
+    // Shadowsocks 2022 writes its userinfo in the clear (SIP002): the method and the two keys reach the engine; the base64
+    // form still does. A plugin the engine lacks becomes a row that says so. Rejects an implementation that base64-decodes
+    // every userinfo and hands the engine an empty method.
+    func testShadowsocks2022AndPlugin() throws {
+        let plain = try XCTUnwrap(MontanaVPNParse.parse("ss://2022-blake3-aes-256-gcm:c2VydmVy:dXNlcg%3D%3D@ss.example.com:8388#Plain"))
+        XCTAssertEqual(plain.method, "2022-blake3-aes-256-gcm"); XCTAssertEqual(plain.uuidOrPassword, "c2VydmVy:dXNlcg==")
+        let b64 = "YWVzLTI1Ni1nY206cHc="   // base64 of aes-256-gcm:pw
+        let legacy = try XCTUnwrap(MontanaVPNParse.parse("ss://\(b64)@ss.example.com:8388?type=ws&path=%2Fws&host=h#B64"))
+        XCTAssertEqual(legacy.method, "aes-256-gcm"); XCTAssertEqual(legacy.uuidOrPassword, "pw"); XCTAssertEqual(legacy.network, "ws"); XCTAssertEqual(legacy.path, "/ws")
+        let ob = MontanaXrayConfig.outbound(plain)
+        XCTAssertEqual(((ob["settings"] as? [String: Any])?["servers"] as? [[String: Any]])?.first?["method"] as? String, "2022-blake3-aes-256-gcm")
+        let plugged = try XCTUnwrap(MontanaVPNParse.parse("ss://\(b64)@ss.example.com:8388?plugin=obfs-local%3Bobfs%3Dhttp#Obfs"))
+        XCTAssertEqual(plugged.proto, .unsupported); XCTAssertEqual(plugged.scheme, "ss+plugin"); XCTAssertEqual(plugged.reason, "plugin")
+        XCTAssertEqual(plugged.host, "ss.example.com"); XCTAssertEqual(plugged.name, "Obfs")
+    }
+
+    // The two post-quantum words of a VLESS link reach the engine: the encryption verbatim, the REALITY verification as
+    // mldsa65Verify. The permutation: encryption=none and no pqv write "none" and no verify key. Rejects the implementation
+    // that wrote "none" for every link (the critic's P-7).
+    func testVlessPostQuantumFieldsReachTheEngine() throws {
+        let link = "vless://11111111-2222-3333-4444-555555555555@203.0.113.7:443?encryption=mlkem768x25519plus.native.0rtt.KEY&type=tcp&security=reality&fp=chrome&sni=a.example&pbk=PBK&sid=SID&pqv=VERIFY&alpn=h2%2Chttp%2F1.1#PQ"
+        let c = try XCTUnwrap(MontanaVPNParse.parse(link))
+        XCTAssertEqual(c.encryption, "mlkem768x25519plus.native.0rtt.KEY"); XCTAssertEqual(c.pqv, "VERIFY")
+        let ob = MontanaXrayConfig.outbound(c)
+        let user = try XCTUnwrap((((ob["settings"] as? [String: Any])?["vnext"] as? [[String: Any]])?.first?["users"] as? [[String: Any]])?.first)
+        XCTAssertEqual(user["encryption"] as? String, "mlkem768x25519plus.native.0rtt.KEY")
+        let reality = try XCTUnwrap((ob["streamSettings"] as? [String: Any])?["realitySettings"] as? [String: Any])
+        XCTAssertEqual(reality["mldsa65Verify"] as? String, "VERIFY")
+        let back = try XCTUnwrap(MontanaVPNParse.parse(MontanaVPNParse.serialize(c)))
+        XCTAssertEqual(back.encryption, c.encryption); XCTAssertEqual(back.pqv, "VERIFY"); XCTAssertEqual(back.alpn, "h2,http/1.1")
+        let classic = try XCTUnwrap(MontanaVPNParse.parse("vless://11111111-2222-3333-4444-555555555555@203.0.113.7:443?encryption=none&security=reality&pbk=PBK#C"))
+        XCTAssertNil(classic.encryption)
+        let cob = MontanaXrayConfig.outbound(classic)
+        let cuser = try XCTUnwrap((((cob["settings"] as? [String: Any])?["vnext"] as? [[String: Any]])?.first?["users"] as? [[String: Any]])?.first)
+        XCTAssertEqual(cuser["encryption"] as? String, "none")
+        XCTAssertNil(((cob["streamSettings"] as? [String: Any])?["realitySettings"] as? [String: Any])?["mldsa65Verify"])
+    }
+
+    // TLS extras and the raw-tcp http header: alpn and a pin reach tlsSettings, allowInsecure never does (the engine removed
+    // it and refuses a config that carries it, measured on the loopback 29.09) while the link keeps it for its round trip;
+    // headerType=http writes the engine's header with the path and the Host. The permutation: a plain tls link writes none.
+    func testTLSExtrasAndHTTPHeader() throws {
+        let link = "trojan://pw@1.2.3.4:443?security=tls&sni=s.example&allowInsecure=1&alpn=h3&pinSHA256=AB%3ACD&headerType=http&path=%2Fh&host=hh.example#T"
+        let c = try XCTUnwrap(MontanaVPNParse.parse(link))
+        XCTAssertEqual(c.allowInsecure, true)
+        XCTAssertTrue(MontanaVPNParse.serialize(c).contains("allowInsecure=1"))
+        let stream = try XCTUnwrap(MontanaXrayConfig.outbound(c)["streamSettings"] as? [String: Any])
+        let tls = try XCTUnwrap(stream["tlsSettings"] as? [String: Any])
+        XCTAssertNil(tls["allowInsecure"]); XCTAssertEqual(tls["alpn"] as? [String], ["h3"]); XCTAssertEqual(tls["pinnedPeerCertSha256"] as? String, "AB:CD")
+        let header = try XCTUnwrap((stream["tcpSettings"] as? [String: Any])?["header"] as? [String: Any])
+        XCTAssertEqual(header["type"] as? String, "http")
+        let request = try XCTUnwrap(header["request"] as? [String: Any])
+        XCTAssertEqual(request["path"] as? [String], ["/h"])
+        XCTAssertEqual((request["headers"] as? [String: Any])?["Host"] as? [String], ["hh.example"])
+        let plain = try XCTUnwrap(MontanaVPNParse.parse("trojan://pw@1.2.3.4:443?security=tls&sni=s.example#P"))
+        let pstream = try XCTUnwrap(MontanaXrayConfig.outbound(plain)["streamSettings"] as? [String: Any])
+        XCTAssertNil((pstream["tlsSettings"] as? [String: Any])?["allowInsecure"]); XCTAssertNil(pstream["tcpSettings"])
+    }
+
+    // A scheme the engine lacks stays as a row that says so, with the link whole; a scheme nobody names is no server. The
+    // report counts both. Rejects the implementation that dropped every unknown line silently (the critic's P-6).
+    func testUnsupportedSchemeKeptAsRow() throws {
+        let tuic = "tuic://UUID:PASS@t.example.com:443?congestion_control=bbr&alpn=h3#TUIC"
+        let c = try XCTUnwrap(MontanaVPNParse.parse(tuic))
+        XCTAssertEqual(c.proto, .unsupported); XCTAssertEqual(c.scheme, "tuic"); XCTAssertEqual(c.raw, tuic)
+        XCTAssertEqual(c.host, "t.example.com"); XCTAssertEqual(c.port, 443); XCTAssertEqual(c.name, "TUIC")
+        XCTAssertEqual(MontanaVPNParse.serialize(c), tuic)
+        XCTAssertEqual(MontanaXrayConfig.outbound(c)["protocol"] as? String, "blackhole")
+        XCTAssertNil(MontanaVPNParse.parse("ftp://x@y:21#no"))
+        let report = MontanaVPNParse.report("vless://11111111-2222-3333-4444-555555555555@203.0.113.7:443?security=none#A\n" + tuic + "\nanytls://pw@a.example:443#B\nftp://x@y:21#no\n#profile-web-page-url: https://x\n")
+        XCTAssertEqual(report.servers.count, 3); XCTAssertEqual(report.dropped, 1)
+        XCTAssertEqual(report.unsupported, ["tuic": 1, "anytls": 1]); XCTAssertEqual(report.unsupportedWord, "anytls:1,tuic:1")
+        // The sealed list survives a row of a protocol this build does not know, and a row of a broken shape: the unknown
+        // protocol reads as unsupported, the broken row alone is left out, the others stay (the critic's P-9).
+        let rows = "[{\"proto\":\"tuic9\",\"name\":\"x\",\"host\":\"h\",\"port\":1,\"uuidOrPassword\":\"u\",\"network\":\"tcp\",\"security\":\"none\",\"flow\":\"\",\"sni\":\"\",\"fingerprint\":\"\",\"publicKey\":\"\",\"shortId\":\"\",\"method\":\"\"},"
+            + "{\"proto\":\"vless\",\"name\":1},"
+            + "{\"proto\":\"vless\",\"name\":\"ok\",\"host\":\"h\",\"port\":2,\"uuidOrPassword\":\"u\",\"network\":\"tcp\",\"security\":\"none\",\"flow\":\"\",\"sni\":\"\",\"fingerprint\":\"\",\"publicKey\":\"\",\"shortId\":\"\",\"method\":\"\"}]"
+        let list = MontanaVPNStore.decodeRows(Data(rows.utf8))
+        XCTAssertEqual(list.count, 2); XCTAssertEqual(list[0].proto, .unsupported); XCTAssertEqual(list[1].name, "ok")
+    }
+
+    // The sing-box body: a vless with REALITY over ws, a hysteria2 with its mask, a tuic the engine lacks, and the selector
+    // that is no server. The permutation: the h2 transport the engine removed reads as a row that says so.
+    func testSingBoxBody() throws {
+        let body = """
+        {"outbounds":[
+          {"type":"selector","tag":"auto","outbounds":["A","B"]},
+          {"type":"vless","tag":"A","server":"203.0.113.7","server_port":443,"uuid":"11111111-2222-3333-4444-555555555555","flow":"",
+           "tls":{"enabled":true,"server_name":"a.example","insecure":false,"utls":{"enabled":true,"fingerprint":"chrome"},"reality":{"enabled":true,"public_key":"PBK","short_id":"SID"}},
+           "transport":{"type":"ws","path":"/ws","headers":{"Host":"hh.example"}}},
+          {"type":"hysteria2","tag":"B","server":"hy.example","server_port":8443,"password":"pw","up_mbps":50,"down_mbps":100,"obfs":{"type":"salamander","password":"salt"},"tls":{"enabled":true,"server_name":"hy.example","insecure":true}},
+          {"type":"tuic","tag":"C","server":"t.example","server_port":443,"uuid":"u","password":"p"},
+          {"type":"vmess","tag":"D","server":"v.example","server_port":80,"uuid":"11111111-2222-3333-4444-555555555555","transport":{"type":"http","path":"/h"}}
+        ]}
+        """
+        let read = MontanaVPNSubscription.body(Data(body.utf8))
+        XCTAssertEqual(read.form, "sing-box"); XCTAssertEqual(read.servers.count, 4)
+        let a = read.servers[0]
+        XCTAssertEqual(a.proto, .vless); XCTAssertEqual(a.security, "reality"); XCTAssertEqual(a.publicKey, "PBK"); XCTAssertEqual(a.network, "ws")
+        XCTAssertEqual(a.path, "/ws"); XCTAssertEqual(a.hostHeader, "hh.example"); XCTAssertEqual(a.fingerprint, "chrome"); XCTAssertEqual(a.name, "A")
+        let b = read.servers[1]
+        XCTAssertEqual(b.proto, .hysteria2); XCTAssertEqual(b.obfsPassword, "salt"); XCTAssertEqual(b.up, "50"); XCTAssertEqual(b.allowInsecure, true)
+        XCTAssertEqual(read.servers[2].proto, .unsupported); XCTAssertEqual(read.servers[2].scheme, "tuic")
+        XCTAssertEqual(read.servers[3].proto, .unsupported); XCTAssertEqual(read.servers[3].reason, "transport")
+    }
+
+    // The Clash body: block style with nested opts, flow style on one line, and a type the engine lacks. Rejects a reader
+    // that takes only one of the two YAML shapes.
+    func testClashBody() throws {
+        let body = """
+        port: 7890
+        proxies:
+          - name: "Reality WS"
+            type: vless
+            server: 203.0.113.7
+            port: 443
+            uuid: 11111111-2222-3333-4444-555555555555
+            tls: true
+            servername: a.example
+            client-fingerprint: chrome
+            network: ws
+            ws-opts:
+              path: /ws
+              headers:
+                Host: hh.example
+            reality-opts:
+              public-key: PBK
+              short-id: SID
+          - {name: Hy, type: hysteria2, server: hy.example, port: 8443, password: pw, obfs: salamander, obfs-password: salt, ports: 20000-30000, up: "100 Mbps", skip-cert-verify: true}
+          - name: Any
+            type: anytls
+            server: any.example
+            port: 443
+            password: pw
+        proxy-groups:
+          - name: auto
+        """
+        XCTAssertTrue(MontanaVPNClash.looksLike(body))
+        let read = MontanaVPNSubscription.body(Data(body.utf8))
+        XCTAssertEqual(read.form, "clash"); XCTAssertEqual(read.servers.count, 3)
+        let a = read.servers[0]
+        XCTAssertEqual(a.name, "Reality WS"); XCTAssertEqual(a.proto, .vless); XCTAssertEqual(a.security, "reality"); XCTAssertEqual(a.publicKey, "PBK")
+        XCTAssertEqual(a.shortId, "SID"); XCTAssertEqual(a.network, "ws"); XCTAssertEqual(a.path, "/ws"); XCTAssertEqual(a.hostHeader, "hh.example")
+        XCTAssertEqual(a.sni, "a.example"); XCTAssertEqual(a.fingerprint, "chrome")
+        let h = read.servers[1]
+        XCTAssertEqual(h.proto, .hysteria2); XCTAssertEqual(h.port, 8443); XCTAssertEqual(h.obfsPassword, "salt"); XCTAssertEqual(h.mport, "20000-30000")
+        XCTAssertEqual(h.up, "100"); XCTAssertEqual(h.allowInsecure, true)
+        XCTAssertEqual(read.servers[2].proto, .unsupported); XCTAssertEqual(read.servers[2].scheme, "anytls")
+    }
+
+    // THE PROFILE FILES (29.09): a WireGuard interface file read by its shape, the file's name for the row. The permutation:
+    // the private key stands in [Interface] and the public key in [Peer] -- a reader that swapped the two would dial with the
+    // wrong secret, and the outbound below names which is which; a second peer is not the server.
+    func testWireGuardInterfaceFile() throws {
+        let conf = """
+        # a comment
+        [Interface]
+        PrivateKey = PRIV+key=
+        Address = 10.66.66.2/32, fd42:42:42::2/128
+        DNS = 1.1.1.1
+        MTU = 1280
+
+        [Peer]
+        PublicKey = PUB+key=
+        PresharedKey = PSK=
+        Endpoint = wg.example.com:51820
+        AllowedIPs = 0.0.0.0/0, ::/0
+        PersistentKeepalive = 25
+
+        [Peer]
+        PublicKey = SECOND=
+        Endpoint = other.example.com:51820
+        """
+        XCTAssertTrue(MontanaVPNFile.looksLikeWireGuard(conf)); XCTAssertFalse(MontanaVPNClash.looksLike(conf))
+        let read = MontanaVPNSubscription.body(Data(conf.utf8), name: "office")
+        XCTAssertEqual(read.form, "wireguard"); XCTAssertEqual(read.servers.count, 1)
+        let w = try XCTUnwrap(read.servers.first)
+        XCTAssertEqual(w.proto, .wireguard); XCTAssertEqual(w.name, "office"); XCTAssertEqual(w.host, "wg.example.com"); XCTAssertEqual(w.port, 51820)
+        XCTAssertEqual(w.uuidOrPassword, "PRIV+key="); XCTAssertEqual(w.publicKey, "PUB+key="); XCTAssertEqual(w.presharedKey, "PSK=")
+        XCTAssertEqual(w.localIPs, "10.66.66.2/32,fd42:42:42::2/128"); XCTAssertEqual(w.mtu, 1280); XCTAssertNil(w.reserved)
+        let settings = try XCTUnwrap(MontanaXrayConfig.outbound(w)["settings"] as? [String: Any])
+        XCTAssertEqual(settings["secretKey"] as? String, "PRIV+key=")
+        XCTAssertEqual((settings["peers"] as? [[String: Any]])?.first?["publicKey"] as? String, "PUB+key=")
+        XCTAssertEqual(settings["address"] as? [String], ["10.66.66.2/32", "fd42:42:42::2/128"])
+        // The link the row copies as reads back as the same machine.
+        let back = try XCTUnwrap(MontanaVPNParse.parse(MontanaVPNParse.serialize(w)))
+        XCTAssertEqual(back.host, w.host); XCTAssertEqual(back.publicKey, w.publicKey); XCTAssertEqual(back.uuidOrPassword, w.uuidOrPassword)
+        // A file saved with CRLF endings reads the same: "\r\n" is one Character in Swift, equal to neither "\n" nor "\r".
+        let crlf = MontanaVPNSubscription.body(Data(conf.replacingOccurrences(of: "\n", with: "\r\n").utf8), name: "office")
+        XCTAssertEqual(crlf.form, "wireguard"); XCTAssertEqual(crlf.servers.first?.host, "wg.example.com"); XCTAssertEqual(crlf.servers.first?.publicKey, "PUB+key=")
+        // A file without the peer's key is no server: the row would dial nothing.
+        XCTAssertTrue(MontanaVPNSubscription.body(Data("[Interface]\nPrivateKey = x\n[Peer]\nEndpoint = a.example:1\n".utf8), name: "x").servers.isEmpty)
+    }
+
+    // The Hysteria 2 client config: one map from the top, its hopping ports beside the port, its mask and its bandwidth.
+    // Rejects a reader that knows the Clash shape alone (no `proxies:` here) and one that reads the port from a hopping range.
+    func testHysteriaClientConfigFile() throws {
+        let yaml = """
+        server: hy.example.com:443,20000-30000
+        auth: "secret word"
+        tls:
+          sni: hy.example.com
+          insecure: false
+          pinSHA256: "AB:CD"
+        obfs:
+          type: salamander
+          salamander:
+            password: salt
+        bandwidth:
+          up: 50 mbps
+          down: 200 mbps
+        socks5:
+          listen: 127.0.0.1:1080
+        """
+        XCTAssertTrue(MontanaVPNFile.looksLikeHysteria(yaml)); XCTAssertFalse(MontanaVPNClash.looksLike(yaml))
+        let read = MontanaVPNSubscription.body(Data(yaml.utf8), name: "hy")
+        XCTAssertEqual(read.form, "hysteria"); XCTAssertEqual(read.servers.count, 1)
+        let h = try XCTUnwrap(read.servers.first)
+        XCTAssertEqual(h.proto, .hysteria2); XCTAssertEqual(h.host, "hy.example.com"); XCTAssertEqual(h.port, 443); XCTAssertEqual(h.mport, "20000-30000")
+        XCTAssertEqual(h.uuidOrPassword, "secret word"); XCTAssertEqual(h.sni, "hy.example.com"); XCTAssertNil(h.allowInsecure); XCTAssertEqual(h.pinSHA256, "AB:CD")
+        XCTAssertEqual(h.obfsPassword, "salt"); XCTAssertEqual(h.up, "50"); XCTAssertEqual(h.down, "200"); XCTAssertEqual(h.name, "hy")
+        XCTAssertEqual(h.network, "hysteria"); XCTAssertEqual(h.security, "tls")
+        let crlf = MontanaVPNSubscription.body(Data(yaml.replacingOccurrences(of: "\n", with: "\r\n").utf8), name: "hy")
+        XCTAssertEqual(crlf.form, "hysteria"); XCTAssertEqual(crlf.servers.first?.obfsPassword, "salt"); XCTAssertEqual(crlf.servers.first?.port, 443)
+        let hop = try XCTUnwrap(MontanaVPNFile.hysteria("server: h.example:20000-30000\nauth: pw\n", name: ""))
+        XCTAssertEqual(hop.port, 20000); XCTAssertEqual(hop.mport, "20000-30000"); XCTAssertEqual(hop.name, "h.example")
+    }
+
+    // A profile the engine cannot speak stands as a row that says so: the OpenVPN profile (its `remote` names the machine, the
+    // profile is kept whole) and the platform's own IKEv2 profile (a property list, asked before the page). A page stays a page.
+    func testProfilesTheEngineCannotSpeakAreRowsThatSaySo() throws {
+        let ovpn = "client\ndev tun\nproto udp\nremote vpn.example.org 1194\nresolv-retry infinite\n<ca>\n-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n</ca>\n"
+        let o = MontanaVPNSubscription.body(Data(ovpn.utf8), name: "work")
+        XCTAssertEqual(o.form, "openvpn"); XCTAssertEqual(o.servers.count, 1)
+        XCTAssertEqual(o.servers[0].proto, .unsupported); XCTAssertEqual(o.servers[0].scheme, "openvpn"); XCTAssertEqual(o.servers[0].host, "vpn.example.org")
+        XCTAssertEqual(o.servers[0].port, 1194); XCTAssertEqual(o.servers[0].name, "work"); XCTAssertEqual(o.servers[0].raw, ovpn)
+        XCTAssertEqual(MontanaXrayConfig.outbound(o.servers[0])["protocol"] as? String, "blackhole")
+        let plist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+          <key>PayloadContent</key><array><dict>
+            <key>PayloadType</key><string>com.apple.vpn.managed</string>
+            <key>UserDefinedName</key><string>Office IKEv2</string>
+            <key>VPNType</key><string>IKEv2</string>
+            <key>IKEv2</key><dict><key>RemoteAddress</key><string>ike.example.org</string></dict>
+          </dict></array>
+          <key>PayloadType</key><string>Configuration</string>
+        </dict></plist>
+        """
+        let p = MontanaVPNSubscription.body(Data(plist.utf8), name: "profile")
+        XCTAssertEqual(p.form, "profile"); XCTAssertEqual(p.servers.count, 1)
+        XCTAssertEqual(p.servers[0].proto, .unsupported); XCTAssertEqual(p.servers[0].scheme, "ikev2")
+        XCTAssertEqual(p.servers[0].host, "ike.example.org"); XCTAssertEqual(p.servers[0].name, "Office IKEv2")
+        XCTAssertEqual(MontanaVPNSubscription.body(Data("<html><body>App not supported</body></html>".utf8)).form, "html")
+    }
+
+    // COPY JSON (29.09): the row's whole engine config, in the form this file reads back -- the copy pasted is the same server.
+    // The permutation: a served row hands the panel's outbound whole, with the fields this record has no name for; a row the
+    // engine cannot speak has no JSON; and the one intake road tells a plan's link from a body.
+    func testShareJSONReadsBack() throws {
+        let link = "vless://11111111-2222-3333-4444-555555555555@203.0.113.7:48991?encryption=none&type=xhttp&path=%2F&mode=auto&security=reality&sni=yahoo.com&fp=firefox&pbk=PBK&sid=SID#Auto"
+        let c = try XCTUnwrap(MontanaVPNParse.parse(link))
+        let text = try XCTUnwrap(MontanaXrayConfig.shareJSON(c))
+        guard case .servers(let read) = MontanaVPNIntake.read(text) else { return XCTFail("a JSON body is read in place") }
+        XCTAssertEqual(read.form, "engine-json"); XCTAssertEqual(read.servers.count, 1)
+        let back = try XCTUnwrap(read.servers.first)
+        XCTAssertEqual(back.name, "Auto"); XCTAssertEqual(back.host, c.host); XCTAssertEqual(back.port, c.port); XCTAssertEqual(back.uuidOrPassword, c.uuidOrPassword)
+        XCTAssertEqual(back.network, "xhttp"); XCTAssertEqual(back.security, "reality"); XCTAssertEqual(back.publicKey, "PBK"); XCTAssertEqual(back.shortId, "SID")
+        XCTAssertEqual(back.sni, "yahoo.com"); XCTAssertEqual(back.mode, "auto"); XCTAssertEqual(back.path, "/")
+        var served = c
+        served.engineOutbound = "{\"protocol\":\"vless\",\"tag\":\"x\",\"settings\":{\"vnext\":[{\"address\":\"203.0.113.7\",\"port\":48991,\"users\":[{\"id\":\"11111111-2222-3333-4444-555555555555\",\"encryption\":\"none\"}]}]},\"streamSettings\":{\"network\":\"xhttp\",\"security\":\"reality\",\"realitySettings\":{\"serverName\":\"yahoo.com\",\"publicKey\":\"PBK\",\"fingerprint\":\"firefox\"},\"xhttpSettings\":{\"mode\":\"auto\",\"path\":\"/\",\"extra\":{\"xmux\":{\"maxConcurrency\":\"16-32\"}}},\"sockopt\":{\"tcpKeepAliveIdle\":100}}}"
+        let servedText = try XCTUnwrap(MontanaXrayConfig.shareJSON(served))
+        XCTAssertTrue(servedText.contains("tcpKeepAliveIdle")); XCTAssertTrue(servedText.contains("16-32"))
+        guard case .servers(let again) = MontanaVPNIntake.read(servedText) else { return XCTFail("a JSON body is read in place") }
+        XCTAssertEqual(again.servers.first?.engineOutbound?.contains("tcpKeepAliveIdle"), true)
+        XCTAssertNil(MontanaXrayConfig.shareJSON(MontanaVPNParse.unsupported("tuic://u:p@t.example:443#T", scheme: "tuic", reason: "protocol")))
+        guard case .subscription(let url) = MontanaVPNIntake.read(" https://example.org/sub/abc#Plan\n") else { return XCTFail("a plan's link is fetched") }
+        XCTAssertEqual(url.host, "example.org")
+        // A single engine config without remarks takes the file's name; a pasted body of links is read as before.
+        let bare = "{\"outbounds\":[{\"protocol\":\"trojan\",\"settings\":{\"servers\":[{\"address\":\"t.example\",\"port\":443,\"password\":\"pw\"}]},\"streamSettings\":{\"network\":\"tcp\",\"security\":\"tls\",\"tlsSettings\":{\"serverName\":\"t.example\"}}}]}"
+        guard case .servers(let named) = MontanaVPNIntake.read(bare, name: "home") else { return XCTFail("a JSON body is read in place") }
+        XCTAssertEqual(named.servers.first?.name, "home"); XCTAssertEqual(named.servers.first?.proto, .trojan)
+        guard case .servers(let links) = MontanaVPNIntake.read("trojan://pw@1.2.3.4:443?security=tls#One\n") else { return XCTFail("links are read in place") }
+        XCTAssertEqual(links.form, "links"); XCTAssertEqual(links.servers.count, 1)
+    }
+
+    // THE FORM'S SEAL (29.09): a record leaves the form only when it can be dialled. The permutation: the same draft with the
+    // wrapper switched from REALITY to none keeps no key, while a WireGuard draft keeps its key -- one field, two meanings.
+    func testManualEntrySeal() throws {
+        var d = MontanaVPNConfig.empty(.vless)
+        XCTAssertNil(MontanaVPNManualEntry.sealed(d, port: "443", mtu: ""))          // no machine
+        d.host = " 203.0.113.7 "; d.uuidOrPassword = "11111111-2222-3333-4444-555555555555"
+        XCTAssertNil(MontanaVPNManualEntry.sealed(d, port: "0", mtu: ""))            // no port
+        XCTAssertNil(MontanaVPNManualEntry.sealed(d, port: "port", mtu: ""))
+        d.security = "reality"; d.sni = "a.example"; d.path = " "; d.serviceName = "svc"
+        XCTAssertNil(MontanaVPNManualEntry.sealed(d, port: "443", mtu: ""))          // REALITY without the server's key
+        d.publicKey = "PBK"; d.shortId = "SID"
+        let r = try XCTUnwrap(MontanaVPNManualEntry.sealed(d, port: "443", mtu: ""))
+        XCTAssertEqual(r.host, "203.0.113.7"); XCTAssertEqual(r.port, 443); XCTAssertEqual(r.name, "203.0.113.7")
+        XCTAssertEqual(r.publicKey, "PBK"); XCTAssertNil(r.path); XCTAssertNil(r.serviceName); XCTAssertNil(r.mtu)   // tcp carries no path, no service name
+        d.security = "none"
+        let plain = try XCTUnwrap(MontanaVPNManualEntry.sealed(d, port: "443", mtu: ""))
+        XCTAssertEqual(plain.publicKey, ""); XCTAssertEqual(plain.sni, "")
+        var w = MontanaVPNConfig.empty(.wireguard); w.host = "wg.example"; w.uuidOrPassword = "priv"; w.network = "udp"
+        XCTAssertNil(MontanaVPNManualEntry.sealed(w, port: "51820", mtu: ""))         // no peer key
+        w.publicKey = "peer"; w.localIPs = "10.0.0.2/32"
+        let wg = try XCTUnwrap(MontanaVPNManualEntry.sealed(w, port: "51820", mtu: "1280"))
+        XCTAssertEqual(wg.publicKey, "peer"); XCTAssertEqual(wg.mtu, 1280); XCTAssertEqual(wg.name, "wg.example"); XCTAssertEqual(wg.localIPs, "10.0.0.2/32")
+        var s = MontanaVPNConfig.empty(.socks); s.host = "s.example"
+        XCTAssertNotNil(MontanaVPNManualEntry.sealed(s, port: "1080", mtu: ""))       // SOCKS dials without a secret
+        var ss = MontanaVPNConfig.empty(.shadowsocks); ss.host = "ss.example"; ss.uuidOrPassword = "pw"
+        XCTAssertNil(MontanaVPNManualEntry.sealed(ss, port: "8388", mtu: ""))         // Shadowsocks names its cipher or dials nothing
+        ss.method = "aes-256-gcm"
+        XCTAssertEqual(MontanaVPNManualEntry.sealed(ss, port: "8388", mtu: "")?.method, "aes-256-gcm")
+    }
+
+    // A vmess link that names REALITY and a cipher keeps both; the engine JSON with hysteria and wireguard reads back.
+    func testVmessRealityAndEngineJsonExtras() throws {
+        let j = "{\"v\":\"2\",\"ps\":\"VM\",\"add\":\"v.example\",\"port\":\"443\",\"id\":\"11111111-2222-3333-4444-555555555555\",\"net\":\"tcp\",\"tls\":\"reality\",\"sni\":\"s.example\",\"fp\":\"chrome\",\"pbk\":\"PBK\",\"sid\":\"SID\",\"scy\":\"aes-128-gcm\",\"type\":\"none\"}"
+        let c = try XCTUnwrap(MontanaVPNParse.parse("vmess://" + Data(j.utf8).base64EncodedString()))
+        XCTAssertEqual(c.security, "reality"); XCTAssertEqual(c.publicKey, "PBK"); XCTAssertEqual(c.method, "aes-128-gcm"); XCTAssertEqual(c.fingerprint, "chrome")
+        let user = try XCTUnwrap((((MontanaXrayConfig.outbound(c)["settings"] as? [String: Any])?["vnext"] as? [[String: Any]])?.first?["users"] as? [[String: Any]])?.first)
+        XCTAssertEqual(user["security"] as? String, "aes-128-gcm")
+        let hy: [String: Any] = ["remarks": "HY", "outbounds": [["tag": "proxy", "protocol": "hysteria", "settings": ["version": 2, "address": "hy.example", "port": 8443],
+            "streamSettings": ["network": "hysteria", "security": "tls", "tlsSettings": ["serverName": "hy.example", "allowInsecure": true],
+                               "hysteriaSettings": ["version": 2, "auth": "pw"],
+                               "finalmask": ["udp": [["type": "salamander", "settings": ["password": "salt"]]], "quicParams": ["brutalUp": "100 mbps", "udpHop": ["ports": "20000-30000"]]]]]]]
+        let h = try XCTUnwrap(MontanaVPNSubscription.fromEngineConfig(hy))
+        XCTAssertEqual(h.proto, .hysteria2); XCTAssertEqual(h.uuidOrPassword, "pw"); XCTAssertEqual(h.obfsPassword, "salt"); XCTAssertEqual(h.up, "100"); XCTAssertEqual(h.mport, "20000-30000")
+        let wg: [String: Any] = ["remarks": "WG", "outbounds": [["tag": "proxy", "protocol": "wireguard", "settings": ["secretKey": "priv", "address": ["10.0.0.2/32"], "mtu": 1280, "reserved": [1, 2, 3],
+            "peers": [["publicKey": "peer", "endpoint": "wg.example:51820"]]]]]]
+        let w = try XCTUnwrap(MontanaVPNSubscription.fromEngineConfig(wg))
+        XCTAssertEqual(w.proto, .wireguard); XCTAssertEqual(w.host, "wg.example"); XCTAssertEqual(w.port, 51820); XCTAssertEqual(w.publicKey, "peer"); XCTAssertEqual(w.reserved, "1,2,3")
+    }
+
+    // The engine's batch answer as rows: a number, an error, and a batch that failed as a whole or answered short.
+    func testBatchAnswersParse() {
+        let rows = MontanaEngineDelay.answers("[{\"ms\":71},{\"ms\":-1,\"err\":\"context deadline exceeded\"}]", count: 2, error: nil)
+        XCTAssertEqual(rows.count, 2); XCTAssertEqual(rows[0].ms, 71); XCTAssertNil(rows[0].err); XCTAssertNil(rows[1].ms)
+        XCTAssertEqual(rows[1].err, "timeout\u{00B7}context_deadline_exceeded")
+        let short = MontanaEngineDelay.answers("[{\"ms\":71}]", count: 2, error: nil)
+        XCTAssertEqual(short.count, 2); XCTAssertNil(short[0].ms)
+        let failed = MontanaEngineDelay.answers("", count: 1, error: NSError(domain: "x", code: 1, userInfo: [NSLocalizedDescriptionKey: "connection refused"]))
+        XCTAssertEqual(failed.first?.err, "refused\u{00B7}connection_refused")
+        // The engine's word behind the class, with every host scrubbed (29.09): a silent drop, a reset and a closed handshake
+        // read differently in the diary. Rejects a scrub that leaves a host or an address in the trace.
+        XCTAssertEqual(MontanaEngineDelay.classified("dial tcp 203.0.113.7:443: i/o timeout"), "timeout\u{00B7}dial_tcp_[host]:_i/o_timeout")
+        XCTAssertEqual(MontanaEngineDelay.classified("read tcp [2001:db8::1]:443: connection reset by peer"), "reset\u{00B7}read_tcp_[ip6]:_connection_reset_by_peer")
+        XCTAssertEqual(MontanaEngineDelay.classified("EOF"), "closed\u{00B7}EOF")
+        XCTAssertEqual(MontanaEngineDelay.classified("Get \"http://cp.cloudflare.com/generate_204\": context deadline exceeded"), "timeout\u{00B7}Get_\"http://[host]/generate_204\":_context_deadline_exceeded")
+    }
+
+    // ── Stage 4 wiring: address parsing is the SSOT both the punch and the DHT dial through ──
 
     func testAddrSplitV4AndV6() {
         let a = MontanaEndpointParse.split("192.168.1.7:8443")
@@ -886,7 +1621,7 @@ final class MontanaNetworkTests: XCTestCase {
         XCTAssertEqual(book.overlay(forRef: peerRef), ov)
         XCTAssertEqual(book.ref(forOverlay: ov), peerRef)
 
-        book.learn(ref: peerRef, ip: "192.168.1.50", port: 9001, source: "word")   // LAN-scoped
+        book.learn(ref: peerRef, ip: "192.168.1.50", port: 9001, source: "bonjour")   // LAN-scoped
         book.learn(ref: peerRef, ip: "2a02:6b8::1", port: 9002, source: "dht")        // globally routable
         let eps = book.endpoints(ref: peerRef)
         XCTAssertEqual(eps.count, 2)
@@ -924,6 +1659,7 @@ final class MontanaNetworkTests: XCTestCase {
     // wrong end fails here instead of passing over zeros.
     func testBackupKeyKAT() {
         XCTAssertTrue(MontanaBackup.keyKAT(), "the container key drifted from the frozen vector")
-        XCTAssertTrue(MTRetiredRow.tokenKAT(), "the retired row's token drifted from the table's frozen vector")
     }
+
+
 }

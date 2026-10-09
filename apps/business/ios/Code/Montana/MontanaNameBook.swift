@@ -341,6 +341,7 @@ enum MTNameBook {
         if MTBoardRule.current(.see) == .contacts || MTBoardRule.current(.write) == .contacts {
             DispatchQueue.main.async { MTBoard.shared.renewVersion(own: true) }
         }
+        if MTBoardRule.current(.vpn) == .contacts { Task { @MainActor in MTVPNWall.shared.schedulePush() } }   // the VPN wall follows the book too (29.09)
     }
     /// THE BOOK'S PEOPLE, BY REFERENCE (the author's word 25.09: «only contacts», for who sees my wall and who writes on
     /// it): every card of the book, named or not. Read for every presence word and from any thread — held under its own

@@ -9,9 +9,10 @@ import UIKit
 // bar (the cross, the checkmark): the Business looks as the Settings do. Every row is a button on all of itself; every word
 // comes from the catalogue. Android draws the same pages from the same view of the core (MtBusiness.nativeView).
 
-/// THE BUSINESS'S WORDS FOR TIME, ONE OWNER (point 0 of the constitution): a day, a moment, a span and a running clock -- all in
-/// the person's language (MTLanguage.locale), never the system's region by accident.
+/// THE BUSINESS'S WORDS FOR NUMBERS AND TIME, ONE OWNER (point 0 of the constitution): coins as the wallet writes them, a day, a moment, a span and
+/// a running clock -- all in the person's language (MTLanguage.locale), never the system's region by accident.
 enum MTBizText {
+    static func coins(_ n: UInt64) -> String { MTCoinText.count(Int(clamping: n)) + " " + MTCoinBook.ticker }
     static func day(_ ms: UInt64) -> String {
         Date(timeIntervalSince1970: TimeInterval(ms) / 1000).formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, locale: MTLanguage.locale))
     }
@@ -30,9 +31,31 @@ enum MTBizText {
         Duration.seconds(Int64(clamping: seconds))
             .formatted(.units(allowed: [.hours, .minutes], width: .abbreviated, fractionalPart: .hide(rounded: .down)).locale(MTLanguage.locale))
     }
+    /// A DUE PERIOD AS THE SYSTEM NAMES DATES, on UTC -- the core's own bounds [from, to) (contract 1.3), no calendar counted
+    /// here: a month «October 2026», a week its first and last days, a day its date. The kind is the period key's own
+    /// (period.rs: kind << 28 | index). Nil where the core names no bounds (a core before 1.3).
+    static func period(_ d: MTBizView.Due) -> String? {
+        guard let from = d.from_ms, let to = d.to_ms, from < to else { return nil }
+        let utc = TimeZone(identifier: "UTC") ?? .gmt
+        let first = Date(timeIntervalSince1970: TimeInterval(from) / 1000)
+        let last = Date(timeIntervalSince1970: TimeInterval(to - 1) / 1000)   // the last instant inside [from, to)
+        switch d.period_key >> 28 {
+        case 3: return first.formatted(Date.FormatStyle(locale: MTLanguage.locale, timeZone: utc).month(.wide).year())
+        case 2: return Date.IntervalFormatStyle(date: .abbreviated, time: .omitted, locale: MTLanguage.locale, timeZone: utc).format(first..<last)
+        default: return first.formatted(Date.FormatStyle(date: .abbreviated, time: .omitted, locale: MTLanguage.locale, timeZone: utc))
+        }
+    }
     /// A running clock, hours:minutes:seconds, as the platform's timers show one.
     static func clock(_ seconds: UInt64) -> String {
         Duration.seconds(Int64(clamping: seconds)).formatted(.time(pattern: .hourMinuteSecond).locale(MTLanguage.locale))
+    }
+    static func verdict(_ v: MTBusiness.Verdict) -> String? {
+        switch v {
+        case .done: return nil
+        case .short: return "Not enough coins"
+        case .noRoad: return "There is no chat with this person yet. Open a chat with them, then try again."
+        case .refused: return "The organization did not take this. Check your rights in it."
+        }
     }
 }
 
@@ -277,6 +300,7 @@ struct MTBusinessPage: View {
             .mtBizWord($word)
             .onAppear {
                 biz.redraw()
+                biz.settle()
                 phone = MTBizPhone.confirmed()
             }
         }
@@ -399,13 +423,18 @@ struct MTBizFoundSheet: View {
     }
 }
 
-/// AN ORGANISATION'S PAGE: its people (every row opens the person's card), the invitation, the departments and the open
-/// invitations -- each section only where the person's role may act in it (the core's «can»).
+/// AN ORGANISATION'S PAGE: its people (every row opens the person's card), the invitation, the salary due with its one
+/// touch of payment, the person's own payouts, the departments, the open invitations and the shop -- each section only where
+/// the person's role may act in it (the core's «can»).
 struct MTBizOrgPage: View {
     let org: String
     @ObservedObject private var biz = MTBusiness.shared
     @State private var inviting = false
     @State private var naming = false
+    @State private var offering = false
+    @State private var buying: MTBizView.Offer?
+    @State private var payingAll = false
+    @ObservedObject private var book = MTLocalCoinLedger.shared
     @State private var word: String?
 
     private var v: MTBizView? { biz.views[org] }
@@ -418,10 +447,14 @@ struct MTBizOrgPage: View {
                 MTBizChatsSection(org: org, view: v)
                 MTBizMovesSection(org: org)
                 MTBizFirstDaySection(org: org)
+                // The salary due stands once a salary is set: a new organisation's page is not opened by an empty section.
+                if boss, !v.salary.isEmpty { due(v) }
+                mine(v)
                 MTBizShiftsSection(org: org, view: v)
                 supply(v)
                 if v.may("dept") { depts(v) }
                 if v.may("revoke") { invites(v) }
+                shop(v)
                 MTBizJournalSection(org: org)
             }
         }
@@ -431,8 +464,14 @@ struct MTBizOrgPage: View {
             guard let tag = MTBusiness.freshTag() else { return false }
             return await MTBusiness.shared.write(org, MTBizCommand.dept(tag, name: n, archived: false)) != nil
         } }
+        .sheet(isPresented: $offering) { MTBizOfferSheet(org: org) }
+        .confirmationDialog("Buy", isPresented: Binding(get: { buying != nil }, set: { if !$0 { buying = nil } }), titleVisibility: .hidden) {
+            if let o = buying {
+                Button { buy(o) } label: { Text("Buy for \(MTBizText.coins(o.price))") }
+            }
+        }
         .mtBizWord($word)
-        .onAppear { biz.redraw() }
+        .onAppear { biz.redraw(); biz.settle() }
     }
 
     @ViewBuilder private func people(_ v: MTBizView) -> some View {
@@ -449,6 +488,81 @@ struct MTBizOrgPage: View {
             if 0 < v.waiting { Text("Some records wait for earlier ones to arrive.") }
         }
         .listRowBackground(MTGlassRowPlate())
+    }
+
+    /// THE SALARY DUE AT THE MONTH'S END (point 0, fourth pass): one row per person -- the sum of their finished periods and how
+    /// many there are, where one period is not all -- and, beside a person this phone has no chat with yet, the plain reason
+    /// their salary will wait; an empty list says when a period comes due.
+    @ViewBuilder private func due(_ v: MTBizView) -> some View {
+        Section {
+            if v.due.isEmpty {
+                Text("Nothing is due").foregroundColor(.gray).frame(minHeight: 44)
+            } else {
+                ForEach(dueMembers(v), id: \.self) { m in
+                    let ds = v.due.filter { $0.member == m }
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            // USER-DATA: the employee's name
+                            Text(verbatim: v.member(m)?.name ?? "").foregroundColor(.white)
+                            let named = ds.compactMap(MTBizText.period)
+                            if !named.isEmpty, named.count == ds.count {
+                                // USER-DATA: the periods due, as the system names dates on UTC
+                                Text(verbatim: named.joined(separator: ", ")).font(.caption).foregroundColor(.gray)
+                            } else if 1 < ds.count {
+                                Text("\(ds.count) periods").font(.caption).foregroundColor(.gray)
+                            }
+                            if biz.pipe(of: m) == nil {
+                                MTBizNote(glyph: "bubble.left", text: Text("No chat with this person yet: their salary waits."))
+                            }
+                        }
+                        Spacer()
+                        // USER-DATA: the coins due to the person, every finished period together
+                        Text(verbatim: MTBizText.coins(ds.reduce(UInt64(0)) { $0 &+ $1.coins })).foregroundColor(.gray).monospacedDigit()
+                    }
+                    .frame(minHeight: 44)
+                    .accessibilityElement(children: .combine)
+                }
+                Button { payingAll = true } label: { MTBizRowLabel(glyph: "banknote.fill", title: "Pay everything due") }
+            }
+        } header: { Text("Salary due") } footer: {
+            if v.due.isEmpty {
+                Text("A period comes due once it has ended, on UTC boundaries.")
+            } else {
+                Text("Coins leave your own coin book as coin letters in each person's chat. A short balance pays nothing.")
+            }
+        }
+        .listRowBackground(MTGlassRowPlate())
+        // COINS LEAVE IN A BATCH ONLY ON A SECOND WORD (point 0, safety): one native sheet names the sum and how many people,
+        // and its one button is the sum -- as «Buy for …» is; under the title, what the coin book holds.
+        .confirmationDialog(payAllTitle(v), isPresented: $payingAll, titleVisibility: .visible) {
+            Button { payDue() } label: { Text("Pay \(MTBizText.coins(dueTotal(v)))") }
+        } message: {
+            Text("In your coin book: \(MTBizText.coins(UInt64(max(0, book.balance))))")
+        }
+    }
+    /// The people salary is due to, in the order the core names them, each once.
+    private func dueMembers(_ v: MTBizView) -> [String] {
+        var out: [String] = []
+        for d in v.due where !out.contains(d.member) { out.append(d.member) }
+        return out
+    }
+    private func dueTotal(_ v: MTBizView) -> UInt64 { v.due.reduce(UInt64(0)) { $0 &+ $1.coins } }
+    private func dueCount(_ v: MTBizView) -> Int { Set(v.due.map(\.member)).count }
+    /// «Pay 1 200 $TCM to 3 people» (the sum through MTBizText.coins and its ticker): the sum, and how many people it goes to
+    /// in the language's own plural.
+    private func payAllTitle(_ v: MTBizView) -> Text {
+        let people = String(localized: "to \(dueCount(v)) people", bundle: MTLanguage.bundle)
+        return Text("Pay \(MTBizText.coins(dueTotal(v))) \(people)")
+    }
+
+    @ViewBuilder private func mine(_ v: MTBizView) -> some View {
+        let pays = v.pay.filter { $0.member == v.me.member }.sorted { ($0.at_ms ?? 0) > ($1.at_ms ?? 0) }   // the newest first
+        if !pays.isEmpty {
+            Section {
+                ForEach(pays) { p in MTBizPayRow(pay: p, received: true) }
+            } header: { Text("My payouts") }
+            .listRowBackground(MTGlassRowPlate())
+        }
     }
 
     @ViewBuilder private func depts(_ v: MTBizView) -> some View {
@@ -498,6 +612,86 @@ struct MTBizOrgPage: View {
             .listRowBackground(MTGlassRowPlate())
         }
     }
+
+    @ViewBuilder private func shop(_ v: MTBizView) -> some View {
+        let offers = v.offers.filter { $0.active || v.may("offer") }
+        if !offers.isEmpty || v.may("offer") {
+            Section {
+                ForEach(offers) { o in
+                    Group {
+                        if v.mayBuy(o) {
+                            Button { buying = o } label: { offerRow(o) }
+                        } else {
+                            offerRow(o)
+                        }
+                    }
+                    .swipeActions {
+                        if v.may("offer"), o.active {
+                            Button(role: .destructive) {
+                                Task {
+                                    await MTBusiness.shared.write(org, MTBizCommand.offer(item: o.id, title: o.title, price: o.price,
+                                                                                         stock: UInt32(clamping: o.stock), active: false))
+                                }
+                            } label: { Label("Withdraw", systemImage: "xmark") }
+                        }
+                    }
+                }
+                if v.may("offer") {
+                    Button { offering = true } label: { MTBizRowLabel(glyph: "plus.circle.fill", title: "New item") }
+                }
+                if v.may("fulfil") {
+                    ForEach(v.redeems.filter { !$0.fulfilled }) { r in
+                        HStack(spacing: 12) {
+                            MTBizGlyph("shippingbox.fill")
+                            VStack(alignment: .leading, spacing: 2) {
+                                // USER-DATA: the buyer's name and the item's name
+                                Text(verbatim: (v.member(r.member)?.name ?? "") + " · " + (v.offers.first { $0.id == r.offer }?.title ?? ""))
+                                    .foregroundColor(.white)
+                                Text("Paid \(MTBizText.coins(r.coins))").font(.caption).foregroundColor(.gray)
+                            }
+                            Spacer()
+                        }
+                        .frame(minHeight: 44)
+                        .accessibilityElement(children: .combine)
+                        .swipeActions {
+                            Button {
+                                Task { await MTBusiness.shared.write(org, MTBizCommand.fulfil(record: r.record)) }
+                            } label: { Label("Handed over", systemImage: "checkmark") }
+                        }
+                    }
+                }
+            } header: { Text("Shop") } footer: {
+                if v.buys { Text("A purchase pays the owner from your coin book.") }
+            }
+            .listRowBackground(MTGlassRowPlate())
+        }
+    }
+
+    /// One offer of the shop: its name, how many are left where they are counted, its price.
+    private func offerRow(_ o: MTBizView.Offer) -> some View {
+        HStack(spacing: 12) {
+            MTBizGlyph("bag.fill")
+            VStack(alignment: .leading, spacing: 2) {
+                // USER-DATA: the item's name, as the administrator wrote it
+                Text(verbatim: o.title).foregroundColor(o.active ? .white : .gray)
+                if 0 < o.stock { Text("\(String(o.stock)) left").font(.caption).foregroundColor(.gray) }
+            }
+            Spacer()
+            // USER-DATA: the item's price in coins
+            Text(verbatim: MTBizText.coins(o.price)).foregroundColor(.gray).monospacedDigit()
+        }
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
+        .contentShape(Rectangle())
+    }
+
+    private func payDue() {
+        Task { word = MTBizText.verdict(await MTBusiness.shared.payDue(org)) ?? "Paid" }
+    }
+    private func buy(_ o: MTBizView.Offer) {
+        buying = nil
+        Task { word = MTBizText.verdict(await MTBusiness.shared.buy(org, offer: o, qty: 1)) ?? "Bought" }
+    }
 }
 
 /// A person in the organisation's list: the face, the name, the job title and department, the role, the mark of a confirmed
@@ -529,13 +723,44 @@ struct MTBizMemberRow: View {
     }
 }
 
+/// One payout: the coins, the kind, the day of its period, and its state -- sent, or confirmed by the receiver's own receipt.
+struct MTBizPayRow: View {
+    let pay: MTBizView.Pay
+    /// The receiver's own list (My payouts): its state in the receiver's words -- on its way, or received (their own phone
+    /// took the coins and signed the receipt) -- never «sent», which is the payer's word.
+    var received = false
+    var body: some View {
+        HStack(spacing: 12) {
+            MTBizGlyph(pay.kind == MTBizCommand.bonusPay ? "gift.fill" : "banknote.fill")
+            VStack(alignment: .leading, spacing: 2) {
+                // USER-DATA: the coins of the payout
+                Text(verbatim: MTBizText.coins(pay.coins)).foregroundColor(.white).monospacedDigit()
+                HStack(spacing: 4) {
+                    Text(pay.kind == MTBizCommand.bonusPay ? "Bonus" : "Salary")
+                    // USER-DATA: the day the payout was written (the core's pay[].at_ms), in the system's words
+                    if let at = pay.at_ms { Text(verbatim: "· " + MTBizText.day(at)) }
+                }
+                .font(.caption).foregroundColor(.gray)
+            }
+            Spacer()
+            MTBizNote(glyph: pay.confirmed ? "checkmark.circle.fill" : "paperplane.fill",
+                      text: Text(pay.confirmed ? (received ? "Received" : "Confirmed") : (received ? "On its way" : "Sent")))
+        }
+        .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// A PERSON'S CARD IN THE ORGANISATION: who they are in it, and every act the viewer's role allows on them -- the role, the
-/// department and the job title, the pair's chat, the removal.
+/// department and the job title, the salary and a bonus, coins as a colleague, the pair's chat, the removal.
 struct MTBizMemberPage: View {
     let org: String
     let member: String
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var biz = MTBusiness.shared
+    @State private var salary = false
+    @State private var bonus = false
+    @State private var giving = false
     @State private var placing = false
     @State private var removing = false
     @State private var word: String?
@@ -588,7 +813,7 @@ struct MTBizMemberPage: View {
                         worked("This week", w.week_s, w.week_confirmed_s)
                         worked("This month", w.month_s, w.month_confirmed_s)
                     } header: { Text("Time on shifts") } footer: {
-                        Text("Closed shifts begun this week and this month, on UTC boundaries; a week begins on Monday.")
+                        Text("Closed shifts begun this week and this month, on the salary's UTC boundaries; a week begins on Monday.")
                     }
                     .listRowBackground(MTGlassRowPlate())
                 }
@@ -613,6 +838,26 @@ struct MTBizMemberPage: View {
                     Section { MTBizWhyNot(why) }.listRowBackground(MTGlassRowPlate())
                 }
 
+                if MTBusiness.boss(v.me.role) {
+                    Section {
+                        if let s = v.salary.first(where: { $0.member == member }) {
+                            HStack {
+                                Text("Salary").foregroundColor(.white)
+                                Spacer()
+                                // USER-DATA: the salary in coins and its period
+                                Text(verbatim: MTBizText.coins(s.coins) + " · " + (MTBizPeriod(rawValue: s.period)?.title ?? ""))
+                                    .foregroundColor(.gray).monospacedDigit()
+                            }
+                            .frame(minHeight: 44)
+                            .accessibilityElement(children: .combine)
+                        }
+                        Button { salary = true } label: { MTBizRowLabel(glyph: "calendar.badge.clock", title: "Set salary") }
+                        Button { bonus = true } label: { MTBizRowLabel(glyph: "gift.fill", title: "Pay a bonus") }
+                        ForEach(v.pay.filter { $0.member == member }) { p in MTBizPayRow(pay: p) }
+                    } header: { Text("Pay") }
+                    .listRowBackground(MTGlassRowPlate())
+                }
+
                 if mine, v.may("profile") {
                     Section {
                         Button { renew() } label: { MTBizRowLabel(glyph: "arrow.triangle.2.circlepath", title: "Update my name and link") }
@@ -622,6 +867,7 @@ struct MTBizMemberPage: View {
 
                 if !mine {
                     Section {
+                        Button { giving = true } label: { MTBizRowLabel(glyph: "dollarsign.circle.fill", title: "Send coins") }
                         if let p = biz.pipe(of: member) {
                             Button { MontanaOutsideOpen.chat(p) } label: { MTBizRowLabel(glyph: "message.fill", title: "Open chat") }
                         }
@@ -640,6 +886,17 @@ struct MTBizMemberPage: View {
             }
         }
         .mtBizPage(named: m?.name ?? "")
+        .sheet(isPresented: $salary) { MTBizSalarySheet(org: org, member: member) }
+        .sheet(isPresented: $bonus) {
+            MTBizCoinsSheet(title: "Bonus", note: true, ask: { sum in (Text("Bonus: \(m?.name ?? "")"), Text("Pay \(sum)")) }) { coins, note in
+                await MTBusiness.shared.pay(org, member: member, coins: coins, kind: MTBizCommand.bonusPay, periodKey: 0, note: note)
+            }
+        }
+        .sheet(isPresented: $giving) {
+            MTBizCoinsSheet(title: "Send coins", note: false, ask: { sum in (Text("Coins: \(m?.name ?? "")"), Text("Send \(sum)")) }) { coins, _ in
+                MTBusiness.shared.give(Int(clamping: coins), to: member)
+            }
+        }
         .sheet(isPresented: $placing) { MTBizPlaceSheet(org: org, member: member) }
         .alert("Remove from the organization?", isPresented: $removing) {
             Button("Remove", role: .destructive) {
@@ -778,6 +1035,90 @@ struct MTBizInviteSheet: View {
     }
 }
 
+/// The salary of one person: coins for a period (a day, a week, a month, on UTC boundaries), from this moment.
+struct MTBizSalarySheet: View {
+    let org: String
+    let member: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var coins = ""
+    @State private var period = MTBizPeriod.month
+    @State private var refused = false
+    @FocusState private var typing: Bool
+    @ObservedObject private var biz = MTBusiness.shared
+    /// What is still due to this person under the salary in force: it stays due when a new one is set -- each salary owes its
+    /// own finished periods up to the next one's start (contract 1.3).
+    private var stillDue: UInt64 {
+        (biz.views[org]?.due ?? []).filter { $0.member == member }.reduce(UInt64(0)) { $0 &+ $1.coins }
+    }
+    var body: some View {
+        MTBizSheet(title: "Salary", done: { set() }, ready: 0 < (UInt64(coins.filter { $0.isASCII && $0.isNumber }) ?? 0)) {
+            Section {
+                TextField("Coins", text: $coins).keyboardType(.numberPad).mtBizFirstField($typing)
+                Picker("Period", selection: $period) { ForEach(MTBizPeriod.allCases) { p in Text(p.title).tag(p) } }
+                    .pickerStyle(.segmented)
+            } footer: {
+                Text("Each period comes due on the organization's page once it ends; the one the salary starts in counts whole.")
+            }
+            .listRowBackground(MTGlassRowPlate())
+            if 0 < stillDue {
+                Section {
+                    MTBizNote(glyph: "info.circle", text: Text("What is due under the previous salary stays due."))
+                }
+                .listRowBackground(MTGlassRowPlate())
+            }
+        }
+        .mtBizRefused($refused, "The salary was not set")
+    }
+    private func set() {
+        guard let c = UInt64(coins.filter { $0.isASCII && $0.isNumber }), 0 < c else { refused = true; return }
+        Task {
+            if await MTBusiness.shared.write(org, MTBizCommand.salary(member: member, coins: c, period: period, from: MTBusiness.nowMs)) != nil {
+                dismiss()
+            } else {
+                refused = true
+            }
+        }
+    }
+}
+
+/// Coins, and a note when the payment carries one: a bonus, or coins to a colleague. The coins leave only on a second word: the
+/// checkmark asks one native question whose title names the receiver and whose button is the sum. The act's own verdict is said.
+struct MTBizCoinsSheet: View {
+    let title: LocalizedStringKey
+    let note: Bool
+    let ask: (String) -> (title: Text, button: Text)
+    let act: @MainActor (UInt64, String) async -> MTBusiness.Verdict
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var book = MTLocalCoinLedger.shared
+    @State private var coins = ""
+    @State private var words = ""
+    @State private var word: String?
+    @State private var asking = false
+    @FocusState private var typing: Bool
+    private var sum: UInt64 { UInt64(coins.filter { $0.isASCII && $0.isNumber }) ?? 0 }
+    var body: some View {
+        let q = ask(MTBizText.coins(sum))
+        MTBizSheet(title: title, done: { asking = 0 < sum }, ready: 0 < sum) {
+            Section {
+                // USER-DATA: the coin book's balance, a number
+                LabeledContent { Text(verbatim: MTCoinText.count(book.balance)).monospacedDigit() } label: { Text("Coins") }
+                TextField("Amount", text: $coins).keyboardType(.numberPad).mtBizFirstField($typing)
+                if note { TextField("Note", text: $words) }
+            }
+            .listRowBackground(MTGlassRowPlate())
+        }
+        .confirmationDialog(q.title, isPresented: $asking, titleVisibility: .visible) {
+            Button { go() } label: { q.button }
+        }
+        .mtBizWord($word)
+    }
+    private func go() {
+        guard let c = UInt64(coins.filter { $0.isASCII && $0.isNumber }), 0 < c else { word = "Enter the coins"; return }
+        let note = String(words.prefix(256))
+        Task { if let w = MTBizText.verdict(await act(c, note)) { word = w } else { dismiss() } }
+    }
+}
+
 /// A person's department and job title.
 struct MTBizPlaceSheet: View {
     let org: String
@@ -843,5 +1184,36 @@ struct MTBizNameSheet: View {
         let n = given
         guard !n.isEmpty else { return }
         Task { if await act(n) { dismiss() } else { refused = true } }
+    }
+}
+
+/// An item of the shop: its name, its price in coins, how many there are (none -- without a count).
+struct MTBizOfferSheet: View {
+    let org: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var price = ""
+    @State private var stock = ""
+    @State private var refused = false
+    @FocusState private var typing: Bool
+    var body: some View {
+        MTBizSheet(title: "New item", done: { set() },
+                   ready: !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && 0 < (UInt64(price.filter { $0.isASCII && $0.isNumber }) ?? 0)) {
+            Section {
+                TextField("Item name", text: $title).mtBizFirstField($typing)
+                TextField("Price in coins", text: $price).keyboardType(.numberPad)
+                TextField("How many (optional)", text: $stock).keyboardType(.numberPad)
+            }
+            .listRowBackground(MTGlassRowPlate())
+        }
+        .mtBizRefused($refused)
+    }
+    private func set() {
+        let t = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(256))
+        guard !t.isEmpty, let p = UInt64(price.filter { $0.isASCII && $0.isNumber }), 0 < p, let item = MTBusiness.freshTag() else { refused = true; return }
+        let s = UInt32(clamping: UInt64(stock.filter { $0.isASCII && $0.isNumber }) ?? 0)
+        Task {
+            if await MTBusiness.shared.write(org, MTBizCommand.offer(item: item, title: t, price: p, stock: s, active: true)) != nil { dismiss() } else { refused = true }
+        }
     }
 }

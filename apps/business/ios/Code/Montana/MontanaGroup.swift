@@ -1393,6 +1393,17 @@ final class MTGroup {
         let w = MTGroupWord(t: "wl", g: g.id, id: ChatStore.mintMid().mid, s: g.me, tx: MTBoard.mark + js)   // COMPAT-GATED: a channel's wall word
         return spread(w, in: g, except: nil, own: false) > 0
     }
+    /// A WORD OF A CHANNEL'S WALL TO ONE SUBSCRIBER (MTBoard.answerChannel): the owner's answer to that subscriber's ask, silent,
+    /// within the wall's own bound -- a word past it would be refused where it lands (wallWord).
+    @MainActor @discardableResult
+    func carryWallWord(_ bw: MTBoardWord, in key: String, to ref: String) -> Bool {
+        guard let g = state(key), g.mine, !g.mesh, g.kind == .channel, g.left != true,
+              let m = g.members.first(where: { x in Self.speaker(g.id, x.seat) == ref }),
+              let d = try? JSONEncoder().encode(bw), let js = String(data: d, encoding: .utf8),
+              (MTBoard.mark + js).utf8.count <= Self.wallPostLimit else { return false }
+        let w = MTGroupWord(t: "wl", g: g.id, id: ChatStore.mintMid().mid, s: g.me, tx: MTBoard.mark + js)   // COMPAT-GATED: a channel's wall word
+        return carry(w, to: m.pipe, letter: "", own: false) != nil
+    }
 
     /// A MEMBER LEFT (their «bye»): the owner carries nothing more to them, and everyone left learns the new count.
     @MainActor
@@ -1472,13 +1483,13 @@ final class MTGroup {
 
     /// WHAT A GROUP CARRIES IN THIS BUILD: a person's words, a sticker, and a media letter -- the manifest of a picture, a video, a
     /// round note, a voice or a file, whose sealed pieces lie on the nodes for every receiver (the author's words 06.10.2026 14:2x-14:3x MSK: «groups and channels with the whole of a chat, every kind of data»). Never another service word, a long letter's reference, a coin, a game's letter or a row of a
-    /// phone's own.
+    /// phone's own -- a coin landing in a group would be credited from nobody.
     static func carries(_ text: String) -> Bool {
         // A CHANNEL'S POST (MTBoard.isChannelPost): the wall's own word, its pictures' posters within the wall's own bounds.
         if MTBoard.isChannelPost(text) { return text.utf8.count <= Self.wallPostLimit }
         guard !text.isEmpty, text.count <= ChatStore.sendPieceChars else { return false }
         if MontanaNotify.isService(text), !text.hasPrefix(stickerMark), !text.hasPrefix(mediaMark) { return false }
-        return !mtRetiredLetter(text) && MTChessLetter.parse(text) == nil && !MTRowLetter.ownRow(text)
+        return MTCoinLetter.parse(text) == nil && MTChessLetter.parse(text) == nil && !MTRowLetter.ownRow(text)
     }
     static func clean(_ s: String, _ limit: Int) -> String {
         String(MTCrown.plain(s.trimmingCharacters(in: .whitespacesAndNewlines)).prefix(limit))

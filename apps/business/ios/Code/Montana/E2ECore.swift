@@ -387,10 +387,11 @@ enum E2EStore {
 /// silence is the one honest sign of a fresh install, and it is read once, before any screen.
 enum MontanaInstall {
     private static let K = "mt.install.marker"
-    static func forgetLeftoverSeed(_ wipe: () -> Void) {
+    static func forgetLeftoverSeed(_ wipe: () -> Void, leftovers: () -> Void = {}) {
         let ud = UserDefaults.standard
         guard !ud.bool(forKey: K) else { return }
         MTSeats.forgetRecords()   // the persons on the shelf of the previous installation leave with it, first (the second identity checklist, stage 7)
+        leftovers()   // and what the person of the previous installation kept in the keychain, seed or no seed (09.10.2026)
         if MontanaSeed.hasSeed {
             NSLog("[install] fresh install over a leftover keychain — the previous identity is forgotten")
             wipe()

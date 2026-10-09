@@ -667,6 +667,14 @@ final class MontanaCall: NSObject {
     // log/duration
     private var startedAt: Date?
     private var connectedAt: Date?
+    /// A call stands connected, placed or answered: each of its seconds mints one coin on this side (MTCallMint, 07.10.2026).
+    var mintsTalk: Bool { connectedAt != nil }
+    /// The second of talk now (MTCallMint): the call's peer, a name of this call alone and a name of this call's second.
+    var talkSecond: (peer: String, call: String, ref: String)? {
+        guard let c = connectedAt, let p = peer else { return nil }
+        let call = callSeed.map { MontanaHomeNode.hex($0.prefix(8)) } ?? String(Int(c.timeIntervalSince1970 * 1000))
+        return (p, call, call + ":" + String(Int(Date().timeIntervalSince(c))))
+    }
 
     // speakerphone
     private(set) var speakerOn = false
@@ -1029,31 +1037,15 @@ final class MontanaCall: NSObject {
         return u.contains("transport=tcp") ? 2 : 3
     }
 
-    /// Whether a candidate line names an address of a local network (a private or link-local address, an mDNS name). Such a
-    /// candidate is never tried: trying it is the local network access this app does not keep (the author's word 08.10.2026).
-    static func onLocalNetwork(candidate line: String) -> Bool {
-        let f = line.split(separator: " ")
-        guard f.count > 4 else { return false }
-        let ip = String(f[4])
-        return ip.hasSuffix(".local") || !MontanaTransport.isGlobalIP(ip)
-    }
-    /// The same, for the candidate lines a session description carries.
-    static func withoutLocalCandidates(_ sdp: String) -> String {
-        let lines = sdp.components(separatedBy: "\r\n")
-        let kept = lines.filter { !($0.hasPrefix("a=candidate:") && onLocalNetwork(candidate: $0)) }
-        return kept.count == lines.count ? sdp : kept.joined(separator: "\r\n")
-    }
-
     func rtcConfig(relayOnly: Bool = false, freshPass: Bool = false) async -> RTCConfiguration {
         let c = RTCConfiguration()
         c.sdpSemantics = .unifiedPlan
         c.continualGatheringPolicy = .gatherContinually
         c.bundlePolicy = .maxBundle
-        // A CALL REACHES INTO NO LOCAL NETWORK (the author's word 08.10.2026: «clean the mesh fully» -- this app keeps no
-        // local network): no host candidate is gathered, so no address of a local network leaves in an offer, and a peer's
-        // candidate on one is dropped where its signal enters (MontanaCall.onLocalNetwork). The reflexive address and the
-        // relay carry the call, on one Wi-Fi as on two networks.
-        c.iceTransportPolicy = relayOnly ? .relay : .noHost
+        // Candidates come from the device itself: local interfaces and whatever the peer path
+        // yields. Address discovery and traversal live in the mesh (MontanaNATTraversal), so the
+        // media path is peer-to-peer end to end.
+        c.iceTransportPolicy = relayOnly ? .relay : .all
         // An empty ICE list broke calls over cellular (CGNAT): host candidates do not meet
         // without STUN/TURN. STUN goes instantly, TURN credentials come from the node (we wait
         // 1.5s at most -- a call does not hang on an unreachable node, TURN catches up next call).
@@ -1122,9 +1114,10 @@ final class MontanaCall: NSObject {
             // candidates the minute the relay's server was out of the phone's reach (07.09 07:24).
             MontanaP2PTrace.mark("call_ice", "policy=\(relayOnly ? "relay" : "all") (\(MontanaP2PNode.shared.wifiOn ? "wifi" : "cellular"), relay first)")
         }
-        // A call with no servers at all has no candidate: host candidates are not gathered. The impossibility is
-        // NAMED rather than discovered a minute later by the person.
-        if servers.isEmpty { MontanaP2PTrace.mark("call_ice", "NO ICE SERVERS — no candidate") }
+        // A call with no servers at all can only ever pair host endpoints — behind carrier
+        // NAT that is no call. It is still attempted (a local network may carry it), but the
+        // impossibility is NAMED rather than discovered a minute later by the person.
+        if servers.isEmpty { MontanaP2PTrace.mark("call_ice", "NO ICE SERVERS — host-only call") }
         c.iceServers = servers
         return c
     }
@@ -2028,10 +2021,6 @@ final class MontanaCall: NSObject {
                       video: Bool?, caps: CallCaps?, callSeed: String?, ts: Int? = nil,
                       candidates: [CallICE]? = nil, reason: String? = nil,
                       name: String? = nil, glyph: String? = nil) {
-        // A peer's candidate on a local network is dropped here, at the one entrance, whatever road brought it (rtcConfig).
-        let sdp = sdp.map { CallSDP(type: $0.type, sdp: Self.withoutLocalCandidates($0.sdp)) }
-        let candidate = candidate.flatMap { Self.onLocalNetwork(candidate: $0.candidate) ? nil : $0 }
-        let candidates = candidates?.filter { !Self.onLocalNetwork(candidate: $0.candidate) }
         // The one entrance for all three call roads (voip push, call letter, signal queue):
         // the seed of a finished call is dead -- a late invitation does not light the screen.
         if ctrl == "call", MontanaCall.isDeadSeed(callSeed) {
@@ -4128,7 +4117,7 @@ final class MontanaCall: NSObject {
                     return s.values["localCandidateId"] as? String
                 }
                 let direct = nominatedLocal.contains { localIds.contains($0) }
-                let why = nominatedLocal.contains { tunnelIds.contains($0) } ? "the pair rides a tunnel"
+                let why = nominatedLocal.contains { tunnelIds.contains($0) } ? "the pair rides our VPN tunnel"
                     : (nominatedLocal.isEmpty ? "no pair nominated yet" : "the pair goes through a relay or over TCP")
                 DispatchQueue.main.async {
                     guard self.state == "connected" else { return }
@@ -4427,6 +4416,7 @@ final class MontanaCall: NSObject {
             self.onStateChange?(s, self.peer)
             if s == "connected", self.connectedAt == nil {
                 self.connectedAt = Date()
+                Task { @MainActor in MTMintBeat.run() }   // both sides mint the talk (MTCallMint, 07.10.2026)
                 self.powerStart = MontanaPower.snapshot()   // every call, a voice call too: the ladder's tick ran only for video
                 self.pictureSeen = [:]
                 self.autoSpeakerOnVideo()
@@ -5717,6 +5707,10 @@ enum MontanaCallWiring {
         }
         MontanaCall.watchRoute()   // 15.28: the audio route is measured for the whole call
         MontanaLog.holdRotation = { ch in ch == .trace && MontanaCall.stateSnapshot != "idle" }   // 29.09: the call's trace outlives the call
+        // The VPN recovery's hooks (29.09): the call's word and the diary.
+        MTVPNRecoveryHooks.callBusy = { MontanaCall.isBusy }
+        MTVPNRecoveryHooks.diary = { MontanaP2PTrace.markChanged("vpn_ui", $0, every: 60) }
+        MTVPNRecoveryHooks.markStop = { await MontanaVPNTunnel.shared.markRecoveryStop() }
         c.rejoinHeldCall()   // 24.09: the call its previous process held goes on
         c.onCallLog = { peer, video, incoming, dur, missed, declined, seed, rang, refused in
             E2E.shared.logCall(peer: peer, video: video, incoming: incoming, durationSec: dur, missed: missed)

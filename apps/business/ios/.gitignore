@@ -32,6 +32,8 @@ build-*/
 Code/Frameworks/MontanaBindings.xcframework/
 Code/Frameworks/MontanaRelay.xcframework/
 Code/Frameworks/WebRTC.xcframework
+Code/Frameworks/MontanaXray.xcframework/
+scripts/xray-ios/MontanaXray.xcframework/
 
 # the built core and the transport libraries: built locally by script only
 Code/Frameworks/*.xcframework/

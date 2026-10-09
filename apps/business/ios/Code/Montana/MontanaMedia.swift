@@ -1392,6 +1392,7 @@ enum MontanaHousekeeping {
         // aside.
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 4) {
             MontanaMediaVault.sweepStale()
+            MTMyFaces.settle()   // the person's former faces leave the letters' store for their own place, before its sweep (09.10.2026)
             E2E.shared.sealArchiveFolderNames()
             E2E.shared.sweepBlobs()
             E2E.shared.sweepMediaFiles()

@@ -31,6 +31,49 @@ import Contacts
 // ════════════════════════════════════════════════════════════
 // PROFILEVIEW — PROFILE PAGE
 // ════════════════════════════════════════════════════════════
+/// THE PERSON'S FORMER FACES LIVE WITH THE FACES (09.10.2026, the restore by the words): every face the crop gave is kept in the
+/// faces' own place (avatarsDirURL(), the copy's place «avatars»), named by the list avatarGallery, the newest first. They lay in
+/// the letters' store, whose sweep carries off whatever no letter names -- no letter names a face of one's own, so the gallery was
+/// gone by the next launch, and a copy, which takes the faces' place, never saw it. One owner of the list and its files.
+enum MTMyFaces {
+    static let galleryKey = "avatarGallery"
+    static func names() -> [String] {
+        let raw = UserDefaults.standard.string(forKey: galleryKey) ?? ""
+        return (try? JSONDecoder().decode([String].self, from: Data(raw.utf8))) ?? []
+    }
+    private static func keep(_ list: [String]) {
+        let text = String(data: (try? JSONEncoder().encode(list)) ?? Data(), encoding: .utf8) ?? ""
+        UserDefaults.standard.set(text, forKey: galleryKey)
+    }
+    private static func url(_ name: String) -> URL { avatarsDirURL().appendingPathComponent(name) }
+    /// A face the crop gave: its file in the faces' place, its name first in the list. A file that could not be written is said.
+    static func add(_ jpeg: Data) {
+        let name = "myface_" + UUID().uuidString + ".jpg"
+        do { try jpeg.write(to: url(name), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]) }
+        catch { MontanaLog.event("MY FACES write FAILED \(jpeg.count)B: \(error.localizedDescription)"); return }
+        keep([name] + names().filter { n in n != name })
+    }
+    /// A face's bytes wherever it lies: the faces' place, or the letters' store of the builds before until it moves (settle).
+    static func data(_ name: String) -> Data? { name.contains("/") ? nil : MontanaMediaVault.data(name) }   // a name, never a path
+    static func remove(_ name: String) {
+        keep(names().filter { n in n != name })
+        guard !name.isEmpty, !name.contains("/") else { return }
+        try? FileManager.default.removeItem(at: url(name))
+    }
+    /// THE FACES THE BUILDS BEFORE LAID IN THE LETTERS' STORE MOVE INTO THEIR PLACE, ONCE: a name of the list whose file still lies
+    /// in the store moves; one already in its place lets the store's copy go. Run before the store's sweep (MontanaHousekeeping),
+    /// which counts the list's names among the living for as long as one lies there (ChatStore.sweepMediaFiles).
+    static func settle() {
+        let fm = FileManager.default
+        var moved = 0
+        for n in names() where !n.contains("/") && MontanaMediaStore.exists(n) {
+            if fm.fileExists(atPath: url(n).path) { MontanaMediaStore.remove([n]); continue }
+            if (try? fm.moveItem(at: MontanaMediaStore.url(n), to: url(n))) != nil { moved += 1 }
+        }
+        if 0 < moved { MontanaP2PTrace.mark("my_faces", "moved=\(moved)") }
+    }
+}
+
 // profile avatar gallery: swipe to browse, set as main, delete
 struct AvatarGalleryView: View {
     let photos: [String]
@@ -323,6 +366,9 @@ struct MontanaCardNoteView: View {
             .scrollDismissesKeyboard(.interactively)
             .montanaPageGround()   // my page's ground, as every page wears it (26.09)
             .navigationTitle("Business card").navigationBarTitleDisplayMode(.inline)
+            .onReceive(NotificationCenter.default.publisher(for: .montanaCopyLaid)) { _ in   // the laid card, not the moment before
+                keeping?.cancel(); changed = false; card = MontanaBusinessCard.kept()
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     if onSend == nil { MontanaBackMark { leave() } } else { MontanaCloseMark { leave() } }
@@ -624,7 +670,6 @@ struct ProfileView: View {
     @AppStorage("profileBio") private var bio: String = ""     // a few lines about oneself (24.09)
     @AppStorage("profileLink") private var link: String = ""   // one link, opened by whoever reads the profile (24.09)
     @AppStorage("avatarData") private var avatarData: Data = Data()
-    @AppStorage("avatarGallery") private var avatarGalleryJSON: String = ""
     @Environment(\.dismiss) private var dismiss
     /// The page's own way out ([C-1], 19.09): the sliding container's close when the page is hosted
     /// there — the system's dismiss has nothing to dismiss in a hosted page — else the system's own.
@@ -639,6 +684,11 @@ struct ProfileView: View {
     @State private var tName = ""
     @State private var tBio = ""
     @State private var tLink = ""
+    /// The fields' words as they last agreed with the store -- at the opening, at a copy laid under the open page, at the page's
+    /// own write (09.10): a field is written back only when the person changed it from these, never as the page read it.
+    @State private var shownName = ""
+    @State private var shownBio = ""
+    @State private var shownLink = ""
     @State private var info = ""
     @State private var fieldsSave: Task<Void, Never>?
     @State private var showInfo = false
@@ -818,7 +868,10 @@ struct ProfileView: View {
                     }
                 }
             }
-            .onAppear { tName = name; tBio = bio; tLink = link }
+            .onAppear { fill() }
+            // A copy laid under the open page: the fields take the laid words, and a write still waiting is let go -- it carries
+            // the words of the moment before.
+            .onReceive(NotificationCenter.default.publisher(for: .montanaCopyLaid)) { _ in fieldsSave?.cancel(); fill() }
             // 2) Every change saves ITSELF. The typing pause is not for confirmation but so
             // the peers receive the whole name, not each letter of it.
             .onChange(of: tName) { _, _ in saveFieldsSoon() }
@@ -836,19 +889,18 @@ struct ProfileView: View {
                 MTAvatarCropView(image: src.image) { jpeg in
                     cropSource = nil
                     guard let jpeg else { return }
-                    if let nm = saveToDocs(jpeg, ext: "jpg") {
-                        var list = loadAvatarGallery(); list.insert(nm, at: 0); saveAvatarGallery(list)
-                    }
+                    MTMyFaces.add(jpeg)
                     MontanaSelfFace.set(jpeg)
                 }
             }
             .fullScreenCover(isPresented: $showAvatarGallery) {
                 AvatarGalleryView(
-                    photos: loadAvatarGallery(),
-                    onSetMain: { nm in if let d = try? Data(contentsOf: attachmentURL(nm)) { MontanaSelfFace.set(d) } },
+                    photos: MTMyFaces.names(),
+                    onSetMain: { nm in if let d = MTMyFaces.data(nm) { MontanaSelfFace.set(d) } },
                     onDelete: { nm in
-                        var list = loadAvatarGallery(); list.removeAll { $0 == nm }; saveAvatarGallery(list)
-                        if let first = list.first, let d = try? Data(contentsOf: attachmentURL(first)) { MontanaSelfFace.set(d) }
+                        MTMyFaces.remove(nm)
+                        let list = MTMyFaces.names()
+                        if let first = list.first, let d = MTMyFaces.data(first) { MontanaSelfFace.set(d) }
                         else if list.isEmpty { MontanaSelfFace.clear() }
                     },
                     onClose: { showAvatarGallery = false })
@@ -878,20 +930,32 @@ struct ProfileView: View {
         fieldsSave = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 700_000_000)
             guard !Task.isCancelled else { return }
-            if !tName.trimmingCharacters(in: .whitespaces).isEmpty { name = tName }
+            keepName()
             E2E.shared.broadcastName()
             keepAbout()
         }
     }
-    /// The bio and the link are kept as typed; what leaves is the bio trimmed and the link only when it is one.
+    /// The fields take the store's words, and the words they agree with are noted.
+    private func fill() {
+        tName = name; tBio = bio; tLink = link
+        shownName = name; shownBio = bio; shownLink = link
+    }
+    /// The name is written when the person changed it and did not leave it empty.
+    private func keepName() {
+        guard !tName.trimmingCharacters(in: .whitespaces).isEmpty, tName != shownName else { return }
+        name = tName; shownName = tName
+    }
+    /// The bio and the link are kept as typed, each only when the person changed it; what leaves is the bio trimmed and the
+    /// link only when it is one.
     private func keepAbout() {
         guard !onboarding else { return }
-        bio = tBio; link = tLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        if tBio != shownBio { bio = tBio; shownBio = tBio }
+        if tLink != shownLink { link = tLink.trimmingCharacters(in: .whitespacesAndNewlines); shownLink = tLink }
         E2E.shared.broadcastAbout()
     }
 
     func save() {
-        if !tName.trimmingCharacters(in: .whitespaces).isEmpty { name = tName }
+        keepName()
         MontanaTelemetry.shared.event("PROFILE saved onboarding=\(onboarding) name=\(name.isEmpty ? 0 : 1) avatar=\(avatarData.count)B")
         if !onboarding {
             E2E.shared.broadcastAvatar()
@@ -950,13 +1014,6 @@ struct ProfileView: View {
     /// that one carries ITS OWN photo picker, and nesting one system picker inside another is not allowed.
     var avatarPuck: some View {
         MTSelfFace(size: 108)
-    }
-
-    func loadAvatarGallery() -> [String] {
-        (try? JSONDecoder().decode([String].self, from: Data(avatarGalleryJSON.utf8))) ?? []
-    }
-    func saveAvatarGallery(_ list: [String]) {
-        avatarGalleryJSON = String(data: (try? JSONEncoder().encode(list)) ?? Data(), encoding: .utf8) ?? ""
     }
 }
 
@@ -1102,7 +1159,7 @@ struct MontanaQRCode: View {
                 .overlay {
                     if logo {
                         MontanaHexagon().fill(Color.black)
-                            .overlay(MTAppCrest().padding(side * 0.045))
+                            .overlay(MTAppRound().clipShape(MontanaHexagon()))   // the code's logo in a face's figure: the round face (09.10)
                             .overlay(MontanaHexagon().stroke(Color.white, lineWidth: 2))
                             .frame(width: side * 0.22, height: side * 0.22)
                     }

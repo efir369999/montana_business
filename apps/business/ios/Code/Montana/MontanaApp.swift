@@ -3,9 +3,6 @@
 //  Montana
 //
 
-#if targetEnvironment(macCatalyst)
-import ServiceManagement   // the retired VPN supervisor leaves launchd (MTRetiredSupervisor)
-#endif
 import SwiftUI
 import PushKit
 import BackgroundTasks
@@ -22,10 +19,7 @@ import MetricKit
 enum MontanaEntry {
     @MainActor static func main() {
         #if targetEnvironment(macCatalyst)
-        // THE RETIRED SUPERVISOR LEAVES LAUNCHD (the critic 08.10.2026, N5): a Mac that ran an earlier build keeps a login agent
-        // that starts this app with «--vpn-supervisor» and starts it again whenever it ends. The VPN left for its own app: such
-        // a start takes the agent off launchd and leaves, opening no window.
-        if ProcessInfo.processInfo.arguments.contains("--vpn-supervisor") { MTRetiredSupervisor.leave() }
+        if MTMacVPNService.isAgent { MTMacVPNService.run(); return }
         #endif
         MontanaApp.main()
     }
@@ -37,7 +31,7 @@ struct MontanaApp: App {
     @AppStorage("AppLanguage") private var appLang = ""   // "" = follow system
     init() {
         // Before any screen: an installation that has just appeared must not inherit a person.
-        MontanaInstall.forgetLeftoverSeed { SeedScope.forget() }
+        MontanaInstall.forgetLeftoverSeed({ SeedScope.forget() }, leftovers: { SeedScope.forgetKeychainOfThePerson() })
         MTSeats.launch()   // a move between seats the last run did not finish is finished before any owner is born (the second identity checklist, 1.3)
         BT.dropStale()   // the bubble defaults' generation (the reference for everyone)
         _ = LocalizedBundle.install; MTLanguage.mirror(); MontanaP2PTrace.markOnce("app_init")
@@ -205,7 +199,9 @@ extension Notification.Name {
     /// A correspondent's daily link arrived (their answer to «share contact»); userInfo["conv"].
     static let montanaPeerLinkArrived = Notification.Name("montanaPeerLinkArrived")
     /// A coin's link was tapped: the tabs open the wallet (03.10).
+    static let montanaOpenWallet = Notification.Name("montanaOpenWallet")
     /// The wallet's «Add account»: the tabs open the first screen as the drawer's plus does (03.10).
+    static let montanaAddPerson = Notification.Name("montanaAddPerson")
 }
 
 /// The SSOT of entering a conversation from OUTSIDE live screens -- a notification tap and a
@@ -291,6 +287,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// a real sleep.
     private static var away = true   // the launch is the first return
     static func appBecameActive() {
+        MontanaVPNFreshener.shared.appActive(true)   // the quiet beats of the VPN page live while the app stands on the screen (29.09)
         E2E.shared.appPresence(open: true)       // «I am here» to every correspondence — once per state
         guard away else { return }               // SILENT-OK: the shade, a sheet, Face ID — the person never left
         away = false
@@ -301,18 +298,23 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         MontanaWakePush.registerConvs()   // the door's standing map: only what changed leaves
         Task { await MontanaWakePush.flushPendingDrops() }   // the boxes a drop failed to empty are asked again
         MontanaBlobUpload.sweepOrphanBodies()   // orphan handoff bodies mute the cargo check; a newborn body is spared
+        // The tunnel is read at every return, not only when its page opens: a tunnel that stands is asked what its
+        // reconnect says, and what the extension wrote while the app was away (a death, a raise by the system) rides.
+        Task { await MontanaVPNTunnel.shared.load() }
     }
     /// THE APPLICATION LEAVES THE PERSON (24.09): the farewell, and the diary says what it holds before the sleep.
     static func appLeft() {
+        MontanaVPNFreshener.shared.appActive(false)
         away = true                           // the next activation is a return
         E2E.shared.appPresence(open: false)   // the farewell
         MontanaDiagShip.shipNow()   // leaving the person — say it now, another occasion may not come
     }
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        if MTInstallPrepare.asked { MTInstallPrepare.run(); return true }   // the install road: lift the reconnect, stop, leave (MontanaVPNTunnel.swift)
         MontanaP2PTrace.mark("launch_begin")
-        SeedScope.forgetRetired()   // the VPN's own values left with it (08.10.2026): an upgraded phone forgets them at the launch
         MontanaDiagConsent.apply()   // no yes to the diary: the extensions hold no diary id (5.1.1(ii), 08.10.2026)
+        MTTopNet.noteFirstLaunch()   // whether an earlier build had published this device's top row (5.1.2(i), 08.10.2026)
         MTRowLetter.eventWords = { MTGroup.shared.eventWords($0) }   // a group's event row speaks the group's names (stage R)
         AppDelegate.launchedAt = ProcessInfo.processInfo.systemUptime
         MontanaTelemetry.shared.install()   // crashes/hangs/events → Montana/Diagnostics/telemetry.log
@@ -379,6 +381,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         CopyInventory.tickSoon()   // after the feed is read: a plan that leaves something out needs the letters
         MontanaAppleID.publish()          // this device's seed reaches the Apple Account's keychain, when the switch stands (28.09)
         HomeNodeWatch.shared.tickSoon()   // the person's own node: the daily copy, when it is named and switched on (28.09)
+        MTKeeping.shared.tickSoon()       // the copy kept by the people one writes to: the daily renewal, when the person chose it (08.10)
         return true
     }
 
@@ -1031,7 +1034,7 @@ enum MontanaNetWitness {
     private static var netSigSeen = false
     private static var rejudgeDue = false   // the signature changed; the doors are re-judged on the first path that carries
 
-    /// Whether ANY tunnel stands on this device — a third-party VPN client's (this app carries none since 08.10.2026).
+    /// Whether ANY tunnel stands on this device — ours or a third-party VPN client alike.
     /// The system scopes its proxy settings per interface; a scoped entry named utun/ipsec/ppp
     /// is a standing tunnel. Only the FACT leaves the device — never a name, never an address.
     static func tunnelPresent() -> Bool {
@@ -1063,6 +1066,9 @@ enum MontanaNetWitness {
             // road under a full tunnel). Not on every re-evaluation — a flapping tunnel re-evals
             // several times a second — only on a real change of the signature.
             let sig = p.availableInterfaces.map { String(describing: $0.type) }.joined(separator: ",") + "|vpn=\(tunnelPresent() ? 1 : 0)"
+            // THE SYSTEM'S WORD FOR EVERY APP, carried to the tunnel (29.09, MTTunnelDeath): the tunnel sees its bytes and the
+            // phone's own network, never whether the system lets an app through it.
+            MontanaVPNTunnel.notePath(satisfied: p.status == .satisfied, tunnel: sig.hasSuffix("|vpn=1"))
             // ONE owner of «the network changed» ([C-1]): the door verdicts (16.6.19) and the signal
             // lanes to the store (15.4) both hang on this signature — the interface set and the
             // tunnel fact — and nowhere else.
@@ -1071,6 +1077,10 @@ enum MontanaNetWitness {
                 MontanaP2PDirect.resetDoorRoads()   // a new network or a new tunnel: every door is dialled above it again
                 if Self.netSigSeen { Self.rejudgeDue = true }
                 Self.netSigSeen = true
+                // A tunnel that is not ours is judged by the doors three seconds on (MontanaVPNTunnel, 25.09): one that
+                // kills them is overtaken by our own configuration and the recovery.
+                let present = tunnelPresent(), sat = p.status == .satisfied
+                Task { @MainActor in MontanaVPNTunnel.shared.foreignTunnelChanged(present: present, satisfied: sat) }
             }
             // THE NEW NETWORK IS KNOCKED WHEN IT CARRIES (29.09). The signature changes before the path is satisfied —
             // the tunnel's interface appears, its route a moment later — and every door knocked at the first change met
@@ -1716,17 +1726,3 @@ enum MontanaWakeDoor {
         MontanaP2PTrace.mark("wake_verdict", "why=\(p.why) age_s=\(f(p.age)) node_ms=\(f(p.node)) call=\(p.expectsCall ? 1 : 0) ring_ms=\(f(p.ring)) offer_ms=\(f(p.offer)) ice_ms=\(f(p.ice)) verdict=\(verdict)")
     }
 }
-
-#if targetEnvironment(macCatalyst)
-enum MTRetiredSupervisor {
-    static func leave() -> Never {
-        if let id = Bundle.main.bundleIdentifier {
-            let agent = SMAppService.agent(plistName: id + ".VPNRecovery.plist")   // RETIRED-VPN-KEY: the old agent's own file name
-            let done = DispatchSemaphore(value: 0)
-            agent.unregister { _ in done.signal() }
-            _ = done.wait(timeout: .now() + 5)
-        }
-        exit(EXIT_SUCCESS)
-    }
-}
-#endif

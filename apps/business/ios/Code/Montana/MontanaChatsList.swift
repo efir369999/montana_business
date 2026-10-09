@@ -91,29 +91,29 @@ struct MTSearchField: UIViewRepresentable {
     }
 }
 
-/// THE PULL (the author's word 10.09; its own pull 11.09): a pull on the whole feed, as on a web
-/// page, refreshes — and what turns while it does is the platform's refresh glyph on a round of glass,
-/// the size of a row's avatar (08.10.2026: the coins left for their own app, Montana Wallet). The list measures the pull itself, so everything about the feel of it lives in
+/// THE COIN (the author's word 10.09; its own pull 11.09): a pull on the whole feed, as on a web
+/// page, refreshes — and what turns while it does is the Montana coin, face and back, the size of
+/// a row's avatar. The list measures the pull itself, so everything about the feel of it lives in
 /// the numbers below and nowhere else. NATIVE-CHECKED: the system's refresh control fires at a
 /// distance it does not name and appears from the first point; the author asked for a longer pull.
-struct MontanaPullSpinner: View {
+struct MontanaCoinSpinner: View {
     static let side: CGFloat = 58          // the row's avatar circle
-    static let pullStart: CGFloat = 40     // the glyph is not there before the feed is drawn this far
+    static let pullStart: CGFloat = 40     // the coin is not there before the feed is drawn this far
     static let pullTrigger: CGFloat = 140  // let go past this and the feed refreshes; short of it, nothing
     static let hold: CGFloat = 82          // the gap the feed keeps open while the round completes
-    static let pullFull: CGFloat = 240     // drawn this far the glyph has made its whole round — never more than one
+    static let pullFull: CGFloat = 240     // drawn this far the coin has made its whole round — never more than one
     static let finish: TimeInterval = 0.35 // let go: the round it has begun completes this fast
 
     /// How far the feed is drawn down, in points.
     var pull: CGFloat
-    /// The moment of letting go past the trigger and the angle the glyph stood at; nil while the
+    /// The moment of letting go past the trigger and the angle the coin stood at; nil while the
     /// finger still holds it.
     var released: (at: Date, angle: Double)?
 
-    /// 0 at `pullStart`, 1 at `pullTrigger`: the glyph fills in along the way.
+    /// 0 at `pullStart`, 1 at `pullTrigger`: the coin fills in along the way.
     var fraction: CGFloat { min(1, max(0, (pull - Self.pullStart) / (Self.pullTrigger - Self.pullStart))) }
-    /// THE ROUND IS THE PULL (the author's word 11.09): how far the glyph turns is how hard it was
-    /// drawn — half a round at the trigger, the whole round at `pullFull`, and never a second one.
+    /// THE ROUND IS THE PULL (the author's word 11.09): how far the coin turns is how hard it was
+    /// drawn — the back is up at the trigger, the whole round at `pullFull`, and never a second one.
     static func angle(forPull p: CGFloat) -> Double {
         360 * Double(min(1, max(0, (p - pullStart) / (pullFull - pullStart))))
     }
@@ -132,15 +132,18 @@ struct MontanaPullSpinner: View {
         }
     }
 
-    /// The platform's refresh glyph on a round of the system's glass, turned in the plane by the pull.
+    /// The face shows through the front half of the turn, the back through the rear half — mirrored
+    /// back again, because the rotation itself mirrors whatever is behind the edge.
     private func face(_ angle: Double) -> some View {
-        Image(systemName: "arrow.clockwise")
-            .font(.system(size: 24, weight: .semibold))
-            .foregroundStyle(.primary)
-            .rotationEffect(.degrees(angle))
+        let a = angle.truncatingRemainder(dividingBy: 360)
+        let front = a < 90 || a > 270
+        return Image(front ? "CoinFace" : "CoinBack")
+            .resizable().scaledToFill()
             .frame(width: Self.side, height: Self.side)
-            .background(.ultraThinMaterial, in: Circle())
-            .accessibilityHidden(true)
+            .clipShape(Circle())
+            .overlay(Circle().stroke(Color.accentColor.opacity(0.6), lineWidth: 1))
+            .scaleEffect(x: front ? 1 : -1, y: 1)
+            .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
     }
 }
 
@@ -187,8 +190,6 @@ struct MTBarGlobe: View {
     @ObservedObject private var node = MontanaP2PNode.shared
     var body: some View {
         MontanaTransportIcon(transport: .internet, on: node.p2pUp, size: 22, known: node.p2pKnown)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(node.p2pUp ? Text("Connected") : Text("Disconnected"))
     }
 }
 
@@ -280,6 +281,7 @@ final class ConnectionStatus: ObservableObject {
 }
 
 struct ChatsListView: View {
+    @ObservedObject private var keep = MTKeeping.shared   // the crossed glyph of the copy with contacts (08.10)
     @ObservedObject private var playerGate = MontanaPlayerBar.Gate.shared   // the one bit; never the player's clock (the critic 22.09)
     private var musicPlayer: VoicePlayer { VoicePlayer.shared }              // the folded page over the list (15.35): called, not observed
     @State private var playerBarSize: CGSize = .zero   // the floating player's height — the rows' reserve
@@ -350,10 +352,14 @@ struct ChatsListView: View {
             // THE CROSSED SPEAKER UNDER THE CLOCK (the author's word 06.10 20:5x: on the left, in the menu's place while the
             // notifications are off): the system said no, so the first slot says it too and opens the notifications' page;
             // the drawer stays one stroke from the screen's left edge (MontanaDrawerHost).
-            barSlot(0) { if MTNotifyAllowed.shared.refused { openNotifications() } else { openDrawer() } } label: {
+            // THE CROSSED PEOPLE BESIDE IT (the author's word 08.10.2026 23:2x MSK: «when it is off, a crossed glyph like the muted
+            // sound, with the way to the settings of the copy with contacts»): the speaker first, then the copy, then the menu.
+            barSlot(0) {
+                if MTNotifyAllowed.shared.refused { openNotifications() } else if keep.offShown { ui.overlayPage = .keeping } else { openDrawer() }
+            } label: {
                 // No badge here (the author's word 18.09): unfolded, the unread stand on the chats glyph and the missed calls
                 // on the calls glyph — where the thing itself lives.
-                Image(systemName: MTNotifyAllowed.shared.refused ? "speaker.slash" : UIState.Glyph.drawer).font(.system(size: 22, weight: .semibold))
+                Image(systemName: MTNotifyAllowed.shared.refused ? "speaker.slash" : (keep.offShown ? "person.2.slash" : UIState.Glyph.drawer)).font(.system(size: 22, weight: .semibold))
                     .foregroundColor(MontanaOctagon.barGlyph)
             }
             // The contacts, left of the logo (the author's word 19.09).
@@ -400,13 +406,13 @@ struct ChatsListView: View {
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundColor(MontanaOctagon.barGlyph)
             }
-            // THE GLOBE IS THE NETWORK'S LAMP, NOT A PAGE (the author's word 08.10.2026: «Montana P2P -- separate it wholly into
-            // its own app»): the P2P wall left for MT P2P. The lamp says whether this phone holds a node -- green, red, grey while
-            // unknown -- takes no touch, and keeps the seventh share, so the logo stays the centre of seven (the author's word 19.09).
-            MTBarGlobe()
-                .frame(maxWidth: barOpen ? .infinity : 0)
-                .opacity(barOpen ? 1 : 0)
-                .allowsHitTesting(false)
+            // THE GLOBE CHOOSES THE NETWORK PAGE (the author's word 25.09: «a full page under the time panel, as the chats, the
+            // calls, the contacts and the feed»): a page of the finger's row, chosen as every glyph chooses its page, the puck
+            // under the globe. The touch is stamped as before (22.09) when it changes the page: the page reports the milliseconds
+            // from here to its opening; a tap on the globe of the standing page stamps nothing, there is no opening to measure.
+            barSlot(Self.globeSlot) { if ui.pane != .vpn { MontanaVPNOpen.tap() }; withAnimation(.easeInOut(duration: 0.2)) { ui.pane = .vpn } } label: {
+                MTBarGlobe()
+            }
         }
         // THE PUCK IS BORN UNDER EVERY GLYPH (the author's word 24.09: «now and then the tab's selection circle turns
         // darker, lies over the tab's glyph, and what is under it cannot be seen»). The puck was the background of its
@@ -488,15 +494,16 @@ struct ChatsListView: View {
     private static let logoSlot = 3   // the centre of seven — always (the author's word 19.09)
     private static let chatsSlot = 4
     private static let mediaSlot = 5
+    private static let globeSlot = 6
     /// The pages whose search narrows their own rows (the music, 24.09; the feed and the network, 25.09): no results over
     /// them, no pin.
-    private static func searchesItself(_ p: UIState.Pane) -> Bool { p == .music || p == .feed || p == .gallery }
+    private static func searchesItself(_ p: UIState.Pane) -> Bool { p == .music || p == .feed || p == .vpn || p == .mesh || p == .p2p || p == .gallery }
     /// The slot the pane stands under — the puck's home when the page is chosen elsewhere (the drawer, the logo).
     private static func slot(of pane: UIState.Pane) -> Int? {
         switch pane {
         case .chats: return chatsSlot; case .contacts: return contactsSlot; case .calls: return callsSlot
-        case .music, .gallery: return mediaSlot; case .feed: return logoSlot
-        case .groups, .channels: return nil   // opened from the drawer: no glyph of the bar is theirs
+        case .music, .gallery: return mediaSlot; case .feed: return logoSlot; case .vpn: return globeSlot
+        case .mesh, .p2p, .groups, .channels: return nil   // opened from the drawer: no glyph of the bar is theirs
         }
     }
     /// One slot of the bar: the glyph, its action, and under it the puck when it is the chosen one.
@@ -860,8 +867,9 @@ struct ChatsListView: View {
     private func timePanel(_ pane: UIState.Pane, listEmpty: Bool = false, ownSearch: Bool = false) -> MontanaTimePanel {
         MontanaTimePanel(head: { AnyView(listHead(listEmpty: listEmpty, pane: pane).environmentObject(store).environment(ui)) },
                          headPrint: headPrint(listEmpty: listEmpty, pane: pane),
-                         // The coin fetches what the network holds for us.
-                         onRefresh: { await pullRefresh() },
+                         // THE COIN ON THE NETWORK PAGE LOADS THE PLANS AND MEASURES THE LIST (the author's word 29.09); on every other page
+                         // it fetches what the network holds for us.
+                         onRefresh: { if pane == .vpn { await MontanaVPNFreshener.shared.coinRefresh() } else { await pullRefresh() } },
                          onSettled: { turnPanel(open: !barOpen, by: "coin") },
                          pinTop: ownSearch ? false : searchActive,
                          overlay: { ownSearch ? AnyView(EmptyView()) : AnyView(searchOverlay) })
@@ -972,6 +980,13 @@ struct ChatsListView: View {
                                ui.openChat(ch, jump: mid)
                            },
                            onDelete: { deleteStoryMedia(file: $0) })
+        case .vpn, .mesh, .p2p:
+            // THE THREE WALLS SEARCH THEMSELVES (25.09), as the music and the feed do: the word at the head narrows their rows. A
+            // neighbour found on the mesh opens the normal chat, over the tabs.
+            NetworkTabView(panel: timePanel(p, ownSearch: true), wall: p, query: searchText, onOpenChat: { ref in
+                ui.openChat(Chat(name: ref, lastMessage: "", time: nowHHMM(), unread: 0,
+                                 status: "Montana address", convId: ref))
+            })
         case .groups, .channels:
             // THE GROUPS AND THE CHANNELS ARE APPS OF THEIR OWN (the author's words 06.10.2026 11:5x-12:0x MSK: «in the side panel,
             // under Chats, separate apps Groups and Channels -- whole apps of their own, where groups and channels are created and
@@ -1126,6 +1141,7 @@ struct ChatsListView: View {
                         title: store.title(for: c),
                         photoURL: store.avatarFor(c), color: c.color, initial: store.initial(for: c),
                         canDeleteForBoth: MontanaConv.holds(c.convId ?? c.name),
+                        coinsTravel: store.coinsTravel(c),
                         // The tombstone-first order and the erasing live in the store's one road (ChatStore.deleteChat).
                         onBoth: { store.deleteChat(c, forBoth: true); deletingChat = nil },
                         onMine: { store.deleteChat(c, forBoth: false); deletingChat = nil },
@@ -2116,7 +2132,7 @@ extension ChatStore {
     /// from the store's own answers (rowPreview, rowTime, rowStatus, the name book).
     func rowModel(_ c: Chat) -> ChatRowModel {
         let montana = Self.isMontanaRoom(c.name)
-        let local = Self.isLocalRoom(c.name) && !montana   // the Montana room wears the logo, not one's own face
+        let local = Self.isLocalRoom(c.name) && !montana && !Self.isMeshRoom(c.name)   // the Montana room wears the logo, the mesh wall its antenna, not one's own face
         let media = rowMedia(c)
         let answer = rowReaction(c)
         let mine = answer?.mine == true

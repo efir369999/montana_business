@@ -902,13 +902,10 @@ struct MTCoverWaves: View {
             if !Task.isCancelled { quiet = true }
         }
     }
+    /// THE ROUND FACE AMONG ROUND WAVES (the author's word 09.10.2026 13:5x MSK: «Montana_Business_Round.png for the round places --
+    /// in the music»): the waves part as circles, so the icon they part from is the author's round disc.
     private var icon: some View {
-        Group {
-            if let picture = MTMusicArt.icon { Image(uiImage: picture).resizable().scaledToFill() }
-            else { Color(white: 0.24) }
-        }
-        .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: side * MTMusicArt.corner, style: .continuous))
+        MTAppRound().frame(width: side, height: side)
     }
     /// A wave at its age: parting from under the icon at the icon's size, quick at first and settling as it reaches the edges,
     /// thinning and fading as it goes.
@@ -917,7 +914,7 @@ struct MTCoverWaves: View {
         if 0 <= t, t < 1 {
             let e = CGFloat(1 - pow(1 - t, 1.6))   // an even, slow spread
             let size = side + (reach * 2 - side) * e
-            let round = MTMusicArt.corner + (0.5 - MTMusicArt.corner) * min(1, e * 6)   // a circle almost at once: the square is never drawn
+            let round: CGFloat = 0.5   // a circle from the first frame: the round face's own figure
             RoundedRectangle(cornerRadius: size * round, style: .continuous)
                 .stroke(LinearGradient(colors: [Color.white.opacity(0.75), Color.white.opacity(0.18)],
                                        startPoint: .topLeading, endPoint: .bottomTrailing),

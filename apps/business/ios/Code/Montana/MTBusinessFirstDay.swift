@@ -48,7 +48,7 @@ struct MTBizFirstDaySheet: View {
                         // The one to turn to is a manager only when they are one: without a department's manager, the owner.
                         Text(boss.role == MTBizRole.manager.word ? "Your manager" : "Who to turn to")
                     } footer: {
-                        Text("Questions about the work go to this person.")
+                        Text("Questions about the work, the salary and the shop go to this person.")
                     }
                     .listRowBackground(MTGlassRowPlate())
                 }
@@ -63,11 +63,22 @@ struct MTBizFirstDaySheet: View {
                     NavigationLink { MTBizMemberPage(org: org, member: me.member) } label: { MTBizRowLabel(glyph: "person.text.rectangle", title: "My card in the organization") }
                 } header: { Text("What to do next") } footer: {
                     VStack(alignment: .leading, spacing: 6) {
+                        // The coin letter comes from whoever pays it (MTBusiness.pay: an administrator's own phone), not always the owner.
+                        Text("Your payouts come as coin letters in your chat with whoever pays them: the owner or an administrator.")
                         // The words' one honest line, the same as in Settings: what they bring back, and what the number alone does.
-                        Text("On a new phone, the 24 words bring back your saved history; your number alone brings back only your role in your organizations.")
+                        Text("On a new phone, the 24 words bring back your coins and your saved history; your number alone brings back only your role in your organizations.")
                     }
                 }
                 .listRowBackground(MTGlassRowPlate())
+                if let s = v.salary.first(where: { $0.member == me.member }) {
+                    Section {
+                        LabeledContent {
+                            // USER-DATA: the salary in coins and its period
+                            Text(verbatim: MTBizText.coins(s.coins) + " · " + (MTBizPeriod(rawValue: s.period)?.title ?? "")).monospacedDigit()
+                        } label: { Text("Salary") }
+                    }
+                    .listRowBackground(MTGlassRowPlate())
+                }
             }
         }
         .sheet(isPresented: $confirming) { MTBizPhoneSheet { confirming = false } }

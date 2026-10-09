@@ -1056,11 +1056,11 @@ final class MTGroupRoom: NSObject, CXProviderDelegate {
         switch s.c {
         case "offer":
             guard !p.offerer, let sdp = inner.sdp, s.g >= p.gen else { return }
-            answer(p, sdp: MontanaCall.withoutLocalCandidates(sdp), gen: s.g)   // no local network (MontanaCall.onLocalNetwork)
+            answer(p, sdp: sdp, gen: s.g)
         case "answer":
             guard p.offerer, let sdp = inner.sdp, s.g == p.gen, !p.answered, let pc = p.pc else { return }
             p.answered = true
-            pc.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: MontanaCall.withoutLocalCandidates(sdp))) { err in
+            pc.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: sdp)) { err in
                 DispatchQueue.main.async {
                     if err != nil { p.answered = false; return }
                     self.flushHeld(p)
@@ -1069,7 +1069,7 @@ final class MTGroupRoom: NSObject, CXProviderDelegate {
         case "ice":
             // a candidate of a connection older than the pair's is a corpse; one of a newer connection waits for its offer
             guard s.g >= p.gen else { return }
-            for c in inner.ice ?? [] where !MontanaCall.onLocalNetwork(candidate: c.s) {
+            for c in inner.ice ?? [] {
                 let cand = RTCIceCandidate(sdp: c.s, sdpMLineIndex: c.i, sdpMid: c.m)
                 if let pc = p.pc, pc.remoteDescription != nil, s.g == p.gen { pc.add(cand) { _ in } } else { p.heldIce.append(cand) }
             }

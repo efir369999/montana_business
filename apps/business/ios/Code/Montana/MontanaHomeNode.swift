@@ -46,16 +46,9 @@ enum MontanaHomeNode {
     /// The digest of the node's own certificate (a node put up by address, MontanaNodeSetup); empty for a named node.
     static var pin: String { MontanaLocalVault.getString(pinKey) ?? "" }
     static func setPin(_ p: String) { MontanaLocalVault.setString(pinKey, p) }
-    /// A NODE IS REACHED OVER THE INTERNET (the author's word 08.10.2026: no local network in this app): an address of a local
-    /// network -- private, link-local, an mDNS name -- is never dialled, by the copies or by the set-up.
-    static func onLocalNetwork(_ h: String) -> Bool {
-        let parts = h.split(separator: ":")
-        let bare = h.hasPrefix("[") ? String(h.dropFirst().prefix(while: { $0 != "]" })) : (parts.count == 2 ? String(parts[0]) : h)
-        return bare.hasSuffix(".local") || !MontanaTransport.isGlobalIP(bare)
-    }
     /// A pinned node is spoken to straight, on the door's own TLS port; a named one through its front, under /pushwake.
     static func base(_ h: String) -> URL? {
-        guard !h.isEmpty, !onLocalNetwork(h) else { return nil }
+        guard !h.isEmpty else { return nil }
         return URL(string: pin.isEmpty ? "https://" + h + "/pushwake" : "https://" + h + ":" + String(MontanaNodeSetup.tlsPort))
     }
 
@@ -482,15 +475,10 @@ struct HomeNodeView: View {
         let before = MontanaHomeNode.host
         MontanaHomeNode.setHost(host)
         host = MontanaHomeNode.host
-        if MontanaHomeNode.onLocalNetwork(host) {
-            word = "A node is reached over the internet: give the address it has there, not one of your local network."
-            return
-        }
         if host != before || node.state == .unknown || node.state == .noHost { node.ask() }
     }
     private func setUp() {
         commit()
-        guard !MontanaHomeNode.onLocalNetwork(host) else { return }   // the word is said by commit
         settingUp = true
         let h = host, u = login.trimmingCharacters(in: .whitespaces).isEmpty ? "root" : login.trimmingCharacters(in: .whitespaces), pw = password   // NOT-UI
         Task {

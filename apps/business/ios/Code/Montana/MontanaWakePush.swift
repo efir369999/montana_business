@@ -654,6 +654,8 @@ enum MontanaWakePush {
         for inv in MontanaCard.outstandingInvites() {
             m["rdv:" + inv.base64urlNoPad] = rdvLetterSecret(inv)
         }
+        // The pipes of the slots this phone keeps (MTKeeping): the extension opens a loud call in them and shows whose copy it is.
+        for (name, secret) in MTKeeping.listening() { m[name] = secret }
         if let d = try? JSONEncoder().encode(m) { MontanaKeychain.set("nsePipeSecrets", d) }
         if let d = try? JSONEncoder().encode(alias) { MontanaKeychain.set("nsePipeAlias", d) }
         // The share extension sends letters itself; the sender identity rides sealed inside
@@ -771,6 +773,14 @@ enum MontanaWakePush {
             // (measured 26.08: one token at exactly 8192 rows, a receipt's wake answered 404).
             let ahead: UInt64 = MTPipeBook.first(for: pipe) == nil ? windowsAhead : 1
             for w in (w0 - 1)...(w0 + ahead) {
+                let cw = convW(secret, window: w)
+                subs.append(["conv": cw, "sid": mySubId(cw)])
+            }
+        }
+        // THE SLOTS THIS PHONE KEEPS RING IT (MTKeeping, the author's word 08.10.2026 22:4x MSK: the restore by silent pushes): a
+        // call in the pipe of a slot wakes this phone by a background push, and its answer leaves within the wake.
+        for (_, secret) in MTKeeping.listening() {
+            for w in (w0 - 1)...(w0 + 1) {
                 let cw = convW(secret, window: w)
                 subs.append(["conv": cw, "sid": mySubId(cw)])
             }
@@ -2166,6 +2176,7 @@ enum MontanaWakePush {
         for conv in MTPipeBook.all() {   // a blocked person's letters are read too — and buried below, not left to wait
             if let secret = MTPipeBook.secret(for: conv) { pipes[conv] = secret }
         }
+        for (name, secret) in MTKeeping.listening() { pipes[name] = secret }   // the pipes of the slots this phone keeps (MTKeeping)
         let ear = BoxEar(invites: MontanaCard.outstandingInvites(), pipes: pipes, owner: ref)
         guard !ear.subs.isEmpty else { MontanaP2PTrace.mark("box_fetch", "subs=0 — the book/invites are empty (vault busy?)"); return }
         MontanaP2PTrace.mark("box_fetch", "subs=\(ear.subs.count) invites=\(ear.rdvLabels.count / 10) pipes=\(ear.chatOf.count / 10)")
@@ -2630,6 +2641,7 @@ enum MontanaWakePush {
     }
 
     private static func restash(_ row: [String: String]) {
+        if MTKeeping.takes(row) { return }   // a call in the pipe of a slot this phone keeps: answered there, never a letter of the feed
         var arr: [[String: String]] = []
         if let d = MontanaKeychain.get("nseInbox"),
            let a = try? JSONDecoder().decode([[String: String]].self, from: d) { arr = a }
@@ -3248,6 +3260,7 @@ enum MontanaWakePush {
                 await MainActor.run {
                     E2E.notePresenceCapable(chat)
                     E2E.heardCapable(from: chat, payload: payload)   // what its build reads, learned from the stamp as its presence is (25.09)
+                    E2E.heardCoins(from: chat, payload: payload, at: at)   // the balance the last word tells (04.10, the wallet's live top)
                     MontanaPresencePrivacy.notePeerHides(chat, payload.dropFirst(1).contains("h"), at: at)
                     if let a = payload.firstIndex(of: "@") { notePeerDoor(chat, host: String(payload[payload.index(after: a)...])) }
                     MontanaDeliveryEngine.shared.store?.noteSeen(chat, at: at)
@@ -3769,7 +3782,7 @@ enum MontanaDiagShip {
         guard MontanaDiagConsent.on else { return false }   // no yes, nothing leaves: the lines wait on the phone (5.1.1(ii))
         let body: [String: Any] = [
             "dg": dgId,
-            "file": name.hasPrefix("telemetry") ? "tele" : "trace",
+            "file": name.hasPrefix("telemetry") ? "tele" : (name.hasPrefix("vpn") ? "vpn" : "trace"),
             // Stitching three clocks (sender, node, receiver) needs each device's offset from the
             // node's own clock — measured, not assumed, from the node's Date header on the last
             // shipment. tz and a two-letter language say how to read the person's screen, and
@@ -3953,7 +3966,8 @@ enum MontanaDiagShip {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Montana/Diagnostics")
         var gone = 0
-        for n in ["telemetry.log", "p2p-trace.log", "telemetry.log.prev", "p2p-trace.log.prev"] {
+        for n in ["telemetry.log", "p2p-trace.log", "vpn.log",
+                  "telemetry.log.prev", "p2p-trace.log.prev", "vpn.log.prev"] {
             let u = dir.appendingPathComponent(n)
             guard FileManager.default.fileExists(atPath: u.path) else { continue }
             try? Data().write(to: u); gone += 1
@@ -4063,7 +4077,8 @@ enum MontanaDiagShip {
         let fm = FileManager.default
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Montana/Diagnostics")
-        for (name, wmKey, genKey) in [("telemetry.log", "diagWmTele", "diagGenTele"), ("p2p-trace.log", "diagWmTrace", "diagGenTrace")] {
+        for (name, wmKey, genKey) in [("telemetry.log", "diagWmTele", "diagGenTele"), ("p2p-trace.log", "diagWmTrace", "diagGenTrace"),
+                                      ("vpn.log", "diagWmVpn", "diagGenVpn")] {
             let url = dir.appendingPathComponent(name)
             // ONE WATERMARK, BOUND TO THE FILE IT MEASURES (25.09). The offset alone could not tell a rotated file
             // from a grown one: when the fresh file outgrew the old offset before the next pass, the pass shipped
@@ -4218,8 +4233,8 @@ enum MontanaNetProbe {
     private static let atKey = "mt.probe.at"
     /// THE ONE OWNER OF "THIS LINE PASSES PERMITTED DESTINATIONS ONLY" (the author's word 30.09: the VPN wall must tell when it
     /// stands under the white lists). Every road that asks reads this and nothing else: the call's refusal before a far phone is
-    /// rung (the VPN wall's road left with the VPN for its own app, 08.10.2026). The verdict and its hysteresis live in MTNetLine;
-    /// only a round no tunnel carried moves it.
+    /// rung, the VPN wall's road before it raises a node of the wall (MTVPNWhitelistRoad). The verdict and its hysteresis live in
+    /// MTNetLine; only a round no tunnel carried moves it.
     private static let lineKey = "mt.probe.line"
     static var line: MTNetLine {
         UserDefaults.standard.data(forKey: lineKey).flatMap { data in try? JSONDecoder().decode(MTNetLine.self, from: data) } ?? MTNetLine()

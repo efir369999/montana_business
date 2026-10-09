@@ -231,11 +231,12 @@ enum MontanaNodes {
         let ext = parse(external)
         let net = parse(learned())
         let raw = !ext.isEmpty ? ext : (!net.isEmpty ? net : parse(shipped()))
-        // A machine is not its own node. Its address can stand in the list like anyone else's, and a
-        // channel to it is a channel to ITSELF: the lamp goes green, the count of nodes grows, and
-        // there is nobody on the other side.
+        // A machine is not its own node. Its external address is in the list like anyone else's,
+        // and a router that folds a connection back inside hands the node a channel to ITSELF:
+        // the lamp goes green, the count of nodes grows, and there is nobody on the other side.
+        let ownExternal = MontanaPortMap.state.external
         let ownLan = MontanaP2PNode.lanIP() ?? ""
-        return raw.filter { $0.host != ownLan }
+        return raw.filter { $0.host != ownExternal && $0.host != ownLan }
     }
 
     // A node that does not answer is not knocked into the ground: the delay doubles per failure and

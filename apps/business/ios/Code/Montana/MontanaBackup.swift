@@ -82,8 +82,14 @@ enum MontanaBackup {
     private static let kindPlace: UInt8 = 5
     static var places: [(name: String, dir: URL)] {
         [("avatars", avatarsDirURL()), ("wallpapers", MTWallpaper.folder()), ("stories", storiesDir()),
-         ("pictures", MontanaPictures.dir)]
+         ("pictures", MontanaPictures.dir), ("walldrafts", MTBoardDrafts.folder())]
+            + [MTTimeChainPlace.dir().map { ("timechain", $0) }, MTBizPlace.dir.map { ("business", $0) }].compactMap { $0 }
     }
+    /// THE PLACES KEPT WHOLE, folders within folders (the author's words 09.10.2026 13:5x MSK: «close all 13 holes»): the person's
+    /// organisations -- their chains, the number's and the address's confirmation, the roads, every organisation's own media
+    /// folder -- came back from no copy at all, and an owner who was the only administrator never came back. A record of such a
+    /// place is named by the place, its folders and its name, every part a plain name.
+    static let deepPlaces: Set<String> = ["business"]
     /// THE FEED ITSELF (the critic, 23.09: «restore on T3 and see no difference»): every row as the feed holds it
     /// — its name, its rung, its answers, its quote, its group — pieced like a file. The archive's transcript
     /// renames every letter and forgets what became of it; the feed is what the person saw. An older reader
@@ -94,6 +100,11 @@ enum MontanaBackup {
     /// A name a copy may write: one plain file, never a path out of its place.
     static func plainName(_ n: String) -> Bool {
         !n.isEmpty && !n.contains("/") && !n.hasPrefix(".")
+    }
+    /// A path inside a place kept whole: plain names joined, never a step out of the place.
+    static func plainPath(_ n: String) -> Bool {
+        let parts = n.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        return !parts.isEmpty && parts.count <= 8 && parts.allSatisfy(plainName)
     }
 
     /// What kind an attachment is — named by the letter that carries it, or by the file's extension
@@ -122,11 +133,16 @@ enum MontanaBackup {
         /// name and face of every peer regardless (the critic, 23.09).
         var skipPeople: Set<String> = []
         var skipFaces: Set<String> = []
+        /// THE PERSON'S OWN FILES RIDE THE LIGHT COPY (09.10.2026): what no letter of the store names -- a sticker, a moving picture
+        /// kept, a picture of the person's wall -- is the person's own, not a letter's attachment, and is taken even when every kind
+        /// of attachment is left out.
+        var takeUnnamed = false
         var excluding: Bool { !skipConvs.isEmpty || !skipKinds.isEmpty }
         var people: Set<String> { skipConvs.union(skipPeople) }
         func takes(file name: String) -> Bool {
             if skipFiles.contains(name) { return false }
             let o = owner[name]
+            if takeUnnamed, o == nil { return true }
             if let c = o?.conv, skipConvs.contains(c) { return false }
             return !skipKinds.contains(o?.kind ?? MontanaBackup.kind(ofExtension: name))
         }
@@ -765,6 +781,37 @@ enum MontanaBackup {
     // ── the account card ────────────────────────────────────────────────────────
     private struct Card { let data: Data; let count: Int; let skipped: Int }
     private static let outboxTag = "q:outbox"
+    /// WHEN AND BY WHICH APP A CARD WAS WRITTEN (the author's word 09.10.2026 13:2x MSK: «the identity whole, byte for byte, not
+    /// pieces of a Frankenstein»): two tags beside the values, which an older reader passes by as a kind it does not know. The
+    /// light copy, the keepers' copy and the copies of another app of the same words each carry a card, and they arrive in any
+    /// order; without the tags the last one laid won, and a card of yesterday or of another app stood over the newest.
+    static let bornTag = "t:born"
+    static let appTag = "t:app"
+    /// The app a card names: this one. A var, so the engine's own run on the Mac can stand for a second app.
+    static var writer = Bundle.main.bundleIdentifier ?? ""
+    /// The birth of the newest card of this app laid on this phone, and of another app's, in milliseconds; absent, none was laid.
+    static let laidKey = "mt.card.laid"
+    static let laidOtherKey = "mt.card.laid.other"
+    /// The birth of the person the newest card laid here names (the TimeChain of the person, MTLife), in milliseconds.
+    static let laidBirthKey = "mt.card.laid.birth"
+    static let birthTag = "t:birth"
+    /// A PHONE THAT OPENED THE WORDS HAS NOT MET ITS COPY YET (09.10.2026): until a card of this person is laid here, nothing of
+    /// this phone is laid on the nodes or handed to the keepers -- its first copy would be a copy of an empty app, the newest of
+    /// all, and it would stand over the real one at the next restore. Set by the words' page; lifted by the first card laid.
+    static let shutKey = "mt.copy.shut"
+    static var shut: Bool { UserDefaults.standard.object(forKey: shutKey) != nil }
+    /// HOW MANY CARDS WERE LAID SINCE LAUNCH (09.10.2026): an owner whose write from memory is still on its way when a card is laid
+    /// lets it go, or the moment before is written over what was just laid before its owner reads the store again (MTBoard.flush).
+    private static let laidLock = NSLock()
+    private static var laidCount = 0
+    static var cardsLaid: Int { laidLock.lock(); defer { laidLock.unlock() }; return laidCount }
+    /// The words opened a person this phone holds no history of (a person lifted from the shelf brings their own): the phone is
+    /// shut from that moment until a card of the person is laid -- or a week passes, as long as a road of light lives.
+    static func shutIfNew() {
+        guard MontanaArchive.conversations().isEmpty else { return }
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: shutKey)
+        MontanaP2PTrace.mark("copy_shut", "the words opened; nothing leaves until the person's copy is laid")
+    }
     /// WHAT THE CARD CARRIES IS NAMED ONCE, AND NOT HERE ([C-1]): SeedScope names the account's content and
     /// the person's settings — the VPN among them — and a copy takes exactly those, by name and by prefix,
     /// with the one set whose store is the shared keychain. A second list of its own would drift on the
@@ -812,10 +859,21 @@ enum MontanaBackup {
                   let j = try? JSONEncoder().encode(a.filter { !people.contains($0) }) else { continue }
             out["k:" + k] = j.base64EncodedString()
         }
+        // THE PERSON'S SECRETS TRAVEL WHOLE, UNDER THE SEAL OF THE WORDS (the author's words 09.10.2026 13:5x MSK: «close all 13
+        // holes», the Passwords among them; the word of 06.10 kept them on this phone alone, and a restore by the words brought back
+        // none): the keychain item as it stands, sealed with the rest of the copy under a key the words alone derive.
+        for k in SeedScope.keychainWhole {
+            guard let d = MontanaKeychain.get(k), !d.isEmpty else { continue }
+            out["w:" + k] = d.base64EncodedString()
+        }
         // The letters still on their way: laid back into the queue once their pipes stand again.
         if let q = SeedScope.outboxNow() { out[outboxTag] = without(people, json: q).base64EncodedString() }
+        let count = out.count
+        out[bornTag] = String(Int64((Date().timeIntervalSince1970 * 1000).rounded()))
+        out[appTag] = writer
+        if let b = MTLife.birth { out[birthTag] = String(b) }
         guard let data = try? JSONEncoder().encode(out) else { return nil }
-        return Card(data: data, count: out.count, skipped: skipped)
+        return Card(data: data, count: count, skipped: skipped)
     }
 
     /// A LEFT-OUT CONVERSATION LEAVES NO WORD IN A COLLECTION: its key in a map, its name in a list, a record
@@ -872,12 +930,59 @@ enum MontanaBackup {
         return out
     }
 
-    private static func layCard(_ d: Data) -> Bool {
-        guard MontanaDeviceKey.key != nil,
-              let map = try? JSONDecoder().decode([String: String].self, from: d) else { return false }
+    /// What became of a card: laid as this phone's own, passed by (older than the one laid, or another app's beside this app's
+    /// own), or refused (no device key to seal it under).
+    enum CardFate { case laid, passed, refused }
+    /// THE NEWEST CARD OF THIS APP IS THE PHONE'S CARD (09.10.2026). A card of this app is laid only when it was written after the
+    /// last one laid here; another app's card only while none of this app's own stands, and only over an older one of its kind; a
+    /// card written before the tags only on a phone that has laid none. A card passed by lays nothing -- no value, no set, no
+    /// letter on its way: the name of yesterday never rises over the name of today, and another app's settings never over these.
+    static func fate(born: Int64?, app: String?, birth: Int64? = nil) -> CardFate {
         let ud = UserDefaults.standard
+        let laidOwn = (ud.object(forKey: laidKey) as? NSNumber)?.int64Value
+        let laidOther = (ud.object(forKey: laidOtherKey) as? NSNumber)?.int64Value
+        guard let born else {
+            if laidOwn != nil || laidOther != nil { return .passed }
+            ud.set(NSNumber(value: Int64(0)), forKey: laidKey)
+            return .laid
+        }
+        if (app ?? writer) == writer {
+            // AN OLDER LINE OF THE PERSON STANDS OVER A YOUNGER ONE (the TimeChain of the person, the author's words 09.10.2026
+            // 13:5x MSK): a card naming a later birth than the card laid comes from a phone that began the person anew and never
+            // heard their first second -- however new, it is not the person's history; within one line the newest card stands.
+            let laidLine = (ud.object(forKey: laidBirthKey) as? NSNumber)?.int64Value
+            if let b = birth, let lb = laidLine, b != lb {
+                if lb < b { return .passed }
+            } else if let l = laidOwn, born <= l {
+                return .passed
+            }
+            ud.set(NSNumber(value: born), forKey: laidKey)
+            if let b = birth { ud.set(NSNumber(value: b), forKey: laidBirthKey) }
+        } else {
+            if laidOwn != nil { return .passed }
+            if let l = laidOther, born <= l { return .passed }
+            ud.set(NSNumber(value: born), forKey: laidOtherKey)
+        }
+        return .laid
+    }
+    private static func layCard(_ d: Data) -> CardFate {
+        guard MontanaDeviceKey.key != nil,
+              let map = try? JSONDecoder().decode([String: String].self, from: d) else { return .refused }
+        let ud = UserDefaults.standard
+        ud.removeObject(forKey: shutKey)   // a card of this person came to this phone: it has met its copy
+        guard fate(born: map[bornTag].flatMap { Int64($0) }, app: map[appTag], birth: map[birthTag].flatMap { Int64($0) }) == .laid else { return .passed }
+        // A CARD OF ANOTHER APP OF THE SAME WORDS BRINGS THE PERSON, NEVER ITS SETTINGS (09.10.2026): the person is one in every app
+        // of the words -- the name, the face, the people, the letters -- while a setting, a consent and a keeping of copies are each
+        // app's own; and every card lays only what this app's own SeedScope names, so no retired or foreign key rises here.
+        let own = (map[appTag] ?? writer) == writer
+        laidLock.lock(); laidCount += 1; laidLock.unlock()
         for (tagged, v) in map {
             let k = String(tagged.dropFirst(2))
+            if ["d:", "b:", "s:", "n:", "a:", "m:", "p:"].contains(String(tagged.prefix(2))), !SeedScope.carries(k, sameApp: own) { continue }
+            if k == MTLife.birthKey {   // the person's first second: of the one held and the one carried, the earlier (MTLife.heard)
+                if let ms = Double(v) { MTLife.heard(Int64(ms)) }
+                continue
+            }
             let joins = SeedScope.unionKeys.contains(k)
             let fields = SeedScope.unionKnownBy[k] ?? SeedScope.unionKnownByDefault
             switch tagged.prefix(2) {
@@ -918,10 +1023,29 @@ enum MontanaBackup {
                     let all = (union(have, a) as? [String]) ?? a
                     MontanaKeychain.set(k, (try? JSONEncoder().encode(all)) ?? raw)
                 }
+            case "w:":
+                // The person's secrets, laid back whole: each record once by its id, the one written last (MTSecretItem.at).
+                guard own, SeedScope.keychainWhole.contains(k), let raw = Data(base64Encoded: v) else { continue }
+                MontanaKeychain.set(k, newest(MontanaKeychain.get(k) ?? Data(), raw))
             default: break
             }
         }
-        return true
+        return .laid
+    }
+
+    /// Two lists of records known by their id: each record once, the one written last.
+    static func newest(_ mine: Data, _ theirs: Data) -> Data {
+        guard let t = (try? JSONSerialization.jsonObject(with: theirs)) as? [[String: Any]] else { return mine.isEmpty ? theirs : mine }
+        let m = ((try? JSONSerialization.jsonObject(with: mine)) as? [[String: Any]]) ?? []
+        var byId: [String: [String: Any]] = [:]
+        var order: [String] = []
+        for r in m + t {
+            guard let id = r["id"] as? String else { continue }
+            if let have = byId[id], ((r["at"] as? Double) ?? 0) <= ((have["at"] as? Double) ?? 0) { continue }
+            if byId[id] == nil { order.append(id) }
+            byId[id] = r
+        }
+        return (try? JSONSerialization.data(withJSONObject: order.compactMap { byId[$0] })) ?? theirs
     }
 
     /// The letters on their way a card carried, or nil.
@@ -941,6 +1065,15 @@ enum MontanaBackup {
         }
         var out: [(place: String, name: String, url: URL)] = []
         for (place, dir) in places {
+            if deepPlaces.contains(place) {
+                for rel in ((try? fm.subpathsOfDirectory(atPath: dir.path)) ?? []).sorted() where plainPath(rel) {
+                    var isDir: ObjCBool = false
+                    let u = dir.appendingPathComponent(rel)
+                    guard fm.fileExists(atPath: u.path, isDirectory: &isDir), !isDir.boolValue else { continue }
+                    out.append((place, rel, u))
+                }
+                continue
+            }
             for n in ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).sorted() where plainName(n) {
                 var isDir: ObjCBool = false
                 let u = dir.appendingPathComponent(n)
@@ -1112,6 +1245,23 @@ enum MontanaBackup {
         private var sink: FileHandle? = nil
         private var dropping = false
         func close() { try? sink?.close(); sink = nil }
+        /// THE PLACES' FILES GO WHERE THEIR CARD GOES (09.10.2026): a face or a ground read from a copy waits here until the card
+        /// has spoken -- laid over what stands when its card was laid as the newest, beside it and never over it when the card
+        /// passed. Before, a face already here was never overwritten, and a newer copy laid after an older one kept the older face.
+        private let stage = FileManager.default.temporaryDirectory.appendingPathComponent("mt-places-" + UUID().uuidString, isDirectory: true)
+        private var staged: [(from: URL, to: URL)] = []
+        deinit { try? FileManager.default.removeItem(at: stage) }
+        func settle(over: Bool) {
+            for s in staged {
+                if fm.fileExists(atPath: s.to.path) {
+                    guard over else { continue }
+                    try? fm.removeItem(at: s.to)
+                }
+                try? fm.createDirectory(at: s.to.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? fm.moveItem(at: s.from, to: s.to)
+            }
+            staged = []
+        }
 
         /// One whole record: nil once it is filed, or the refusal that stops the copy.
         func take(_ p: Data) -> Refusal? {
@@ -1137,6 +1287,7 @@ enum MontanaBackup {
                 }
                 let dir: URL
                 let dst: URL
+                var home: URL? = nil
                 if kind == MontanaBackup.kindStore {
                     // THE ATTACHMENT GOES BACK WHERE A LETTER LOOKS FOR IT: the correspondence store,
                     // under the very name the letter carries.
@@ -1145,10 +1296,12 @@ enum MontanaBackup {
                 } else if kind == MontanaBackup.kindPlace {
                     // One of the named places, and one plain file in it: a copy writes nowhere else.
                     let parts = name.split(separator: "/", maxSplits: 1).map(String.init)
-                    guard parts.count == 2, MontanaBackup.plainName(parts[1]),
+                    guard parts.count == 2,
+                          MontanaBackup.deepPlaces.contains(parts[0]) ? MontanaBackup.plainPath(parts[1]) : MontanaBackup.plainName(parts[1]),
                           let d = MontanaBackup.places.first(where: { $0.name == parts[0] })?.dir else { break }
-                    dir = d
-                    dst = d.appendingPathComponent(parts[1])
+                    dir = stage.appendingPathComponent(parts[0], isDirectory: true)
+                    dst = dir.appendingPathComponent(parts[1])
+                    home = d.appendingPathComponent(parts[1])
                 } else {
                     let parts = name.split(separator: "/")
                     guard parts.count == 2 else { break }
@@ -1163,12 +1316,13 @@ enum MontanaBackup {
                         break
                     }
                     do {
-                        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+                        try fm.createDirectory(at: dst.deletingLastPathComponent(), withIntermediateDirectories: true)
                         try Data().write(to: dst, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
                         sink = try FileHandle(forWritingTo: dst)
                     } catch { return MontanaBackup.refuse("media", error) }
                     if kind == MontanaBackup.kindPlace {
                         placed += 1
+                        if let home { staged.append((dst, home)) }
                     } else {
                         tally.media += 1
                     }
@@ -1208,11 +1362,13 @@ enum MontanaBackup {
         // THE CARD IS LAID ONLY ONCE THE WHOLE COPY HAS PROVED ITSELF, AND BEFORE THE FEED IS REBUILT
         // (the critic, 23.09): the tombstones it carries must already stand when the archive is read
         // back, or a conversation deleted long ago rises out of the blocks.
-        if let c = taker.card, !layCard(c) { return .failure(.noVault) }
+        let fate = taker.card.map { layCard($0) }
+        if fate == .refused { return .failure(.noVault) }
         let laid = taker.card != nil
+        taker.settle(over: fate == .laid)
         let landed = taker.landed
         let feed = taker.feed.flatMap { SeedScope.decodeFeed($0) }
-        let outbox = taker.card.flatMap { cardOutbox($0) }
+        let outbox = fate == .laid ? taker.card.flatMap { cardOutbox($0) } : nil
         // The number shown is the one counted HERE, not the one the copy promised.
         var tally = taker.tally
         let folders = MontanaArchive.conversations()
@@ -1229,7 +1385,7 @@ enum MontanaBackup {
             // The files laid back are held from the sweep until their letters are filed and their shelves read.
             DispatchQueue.main.asyncAfter(deadline: .now() + 120) { MontanaMediaStore.release(landed) }
         }
-        MontanaP2PTrace.mark("backup_taken", "chunks=\(chunks) rec=\(tally.records) media=\(tally.media) places=\(taker.placed) chats=\(tally.chats) card=\(laid ? 1 : 0) feed=\(taker.feed?.count ?? 0) queue=\(outbox?.count ?? 0)")
+        MontanaP2PTrace.mark("backup_taken", "chunks=\(chunks) rec=\(tally.records) media=\(tally.media) places=\(taker.placed) chats=\(tally.chats) card=\(fate.map { String(describing: $0) } ?? "none") feed=\(taker.feed?.count ?? 0) queue=\(outbox?.count ?? 0)")
         MontanaLog.event("BACKUP taken: records=\(tally.records) media=\(tally.media) chats=\(tally.chats)")
         return .success(tally)
     }

@@ -2,9 +2,8 @@ import Foundation
 import Network
 
 // THE ADDRESS SERVICE (05.09, the author's word: no UDP in the client). The direct road of this
-// build is TCP by address — a global IPv6 of our own interface; the local network, the Bonjour
-// announce and the router's port map left with the mesh for its own app, Montana Mesh (08.10.2026).
-// Nothing here punches: the UDP volley that stood in
+// build is TCP by address — the local network (Bonjour), a global IPv6 of our own interface, a port
+// the router forwards for us (MontanaPortMap). Nothing here punches: the UDP volley that stood in
 // this file opened no channel in its whole life (measured 2-3.09 on every attempt: the packet lands,
 // the TCP that follows is refused or times out — a hole made by UDP admits no SYN) and cost a
 // descriptor per packet: 84 sockets a shot, 2100 in four minutes, «Too many open files» on the
@@ -25,11 +24,13 @@ final class MontanaNATService {
 
     func start(directPort: UInt16) { lock.lock(); self.directPort = directPort; lock.unlock() }
 
-    /// The one address of our own a peer can dial by TCP: a global IPv6 of a real interface with the
-    /// direct port. A carrier-NAT IPv4 is never named — nobody can dial it, and a word that names it
-    /// only spends the peer's dials.
+    /// The one address of our own a peer can dial by TCP: the port the router forwards for us, else a
+    /// global IPv6 of a real interface with the direct port. A carrier-NAT IPv4 is never named —
+    /// nobody can dial it, and a word that names it only spends the peer's dials.
     func selfEndpoint() -> String? {
         lock.lock(); let port = directPort; lock.unlock()
+        let pm = MontanaPortMap.state
+        if pm.open, !pm.external.isEmpty, pm.port > 0 { return "\(pm.external):\(pm.port)" }
         guard port > 0 else { return nil }
         if let v6 = MontanaSelfEndpoint.candidates().first(where: { $0.contains(":") && MontanaTransport.isGlobalIP($0) }) {
             return "[\(v6)]:\(port)"

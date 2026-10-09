@@ -37,6 +37,19 @@ enum MTBizRole: Int, CaseIterable, Identifiable {
     }
 }
 
+/// A salary's period, by the number a Salary record carries (UTC boundaries, the core's period.rs).
+enum MTBizPeriod: Int, CaseIterable, Identifiable {
+    case day = 1, week = 2, month = 3
+    var id: Int { rawValue }
+    var title: String {
+        switch self {
+        case .day: return String(localized: "Per day", bundle: MTLanguage.bundle)
+        case .week: return String(localized: "Per week", bundle: MTLanguage.bundle)
+        case .month: return String(localized: "Per month", bundle: MTLanguage.bundle)
+        }
+    }
+}
+
 /// A node's kind, by the number a Node record carries (the core's NODE_*), and the word the view names it by.
 enum MTBizNodeKind: Int, CaseIterable, Identifiable {
     case supplier = 1, warehouse = 2, hub = 3, carrier = 4, shop = 5
@@ -96,6 +109,31 @@ struct MTBizView: Decodable, Identifiable {
     }
     struct Dept: Decodable, Identifiable { var id: String; var name: String }
     struct Invite: Decodable, Identifiable { var id: String; var role: String; var dept: String?; var expires_ms: UInt64; var state: String }
+    struct Salary: Decodable { var member: String; var coins: UInt64; var period: Int; var from_ms: UInt64 }
+    struct Pay: Decodable, Identifiable {
+        var record: String; var member: String; var coins: UInt64; var kind: Int; var period_key: UInt64
+        var coin_ref: String; var state: String
+        var at_ms: UInt64?   // the Pay record's moment (the core's pay[].at_ms); a core without it leaves it nil
+        /// A salary payout's period on UTC, [from, to) (contract 1.4); null for a bonus, nil from a core before 1.4.
+        var from_ms: UInt64?; var to_ms: UInt64?
+        var id: String { record }
+        var confirmed: Bool { state == "confirmed" }   // NOT-UI: the view's token
+    }
+    struct Due: Decodable, Identifiable {
+        var member: String; var coins: UInt64; var period_key: UInt64
+        var coin_ref: String?   // always null for a period not yet paid: the coin letter is named after its Pay record
+        /// The period's bounds on UTC, [from, to) (contract 1.3): the core's own, so no screen counts a calendar. A core before
+        /// 1.3 leaves them nil.
+        var from_ms: UInt64?; var to_ms: UInt64?
+        var id: String { member + ":" + String(period_key) }
+    }
+    struct Offer: Decodable, Identifiable { var id: String; var title: String; var price: UInt64; var stock: UInt64; var active: Bool }
+    struct Redeem: Decodable, Identifiable {
+        var record: String; var member: String; var offer: String; var qty: UInt64; var coins: UInt64; var state: String
+        var at_ms: UInt64?   // the Redeem record's moment (the core's redeems[].at_ms)
+        var id: String { record }
+        var fulfilled: Bool { state == "fulfilled" }   // NOT-UI: the view's token
+    }
     struct Rejected: Decodable { var record: String; var reason: String }
     // THE SUPPLY CHAIN AND THE CHATS (contract v1.1): chain S, an order's lane; chain C, a chat's lane. A core without them
     // writes none of these fields, and the view still opens: each is optional, read through its list below.
@@ -168,6 +206,11 @@ struct MTBizView: Decodable, Identifiable {
     var members: [Member]
     var depts: [Dept]
     var invites: [Invite]
+    var salary: [Salary]
+    var pay: [Pay]
+    var due: [Due]
+    var offers: [Offer]
+    var redeems: [Redeem]
     var rejected: [Rejected]
     var waiting: Int
     var head: String
@@ -231,6 +274,10 @@ extension MTBizView {
         }
     }
 
+    /// Redeem: a purchase pays the owner from the buyer's coin book, so the owner does not buy from themselves
+    /// (MTBusiness.buy); a withdrawn offer sells nothing (the core's offer_inactive).
+    var buys: Bool { may("redeem") && owner.map { $0.member != me.member } == true }
+    func mayBuy(_ o: Offer) -> Bool { buys && o.active }
 }
 
 enum MTBizCore {
@@ -447,9 +494,23 @@ enum MTBizCommand {
     static func shiftClose(note: String) -> [String: Any] { ["kind": "shift_close", "note": note] }
     static func shiftConfirm(_ close: String) -> [String: Any] { ["kind": "shift_confirm", "record": close] }
     static func revoke(invite: String) -> [String: Any] { ["kind": "revoke", "invite_id": invite] }
+    static func offer(item: String, title: String, price: UInt64, stock: UInt32, active: Bool) -> [String: Any] {
+        ["kind": "offer", "item": item, "title": title, "price": price, "stock": stock, "active": active]
+    }
     static func profile(name: String, card: String) -> [String: Any] { ["kind": "profile", "name": name, "card": card] }
     static func phoneBind(attest: Data) -> [String: Any] { ["kind": "phone_bind", "attest": attest.montanaHexString] }
     static func invitePhone(invite: String, e164: String) -> [String: Any] { ["kind": "invite_phone", "invite_id": invite, "e164": e164] }
+    static func salary(member: String, coins: UInt64, period: MTBizPeriod, from ms: UInt64) -> [String: Any] {
+        ["kind": "salary", "member": member, "coins": coins, "period": period.rawValue, "from_ms": ms]
+    }
+    static func pay(member: String, kind: Int, periodKey: UInt64, coins: UInt64, note: String) -> [String: Any] {
+        ["kind": "pay", "member": member, "pay_kind": kind, "period_key": periodKey, "coins": coins, "note": note]
+    }
+    static func receipt(record: String) -> [String: Any] { ["kind": "receipt", "record": record] }
+    static func redeem(item: String, qty: UInt32, coins: UInt64) -> [String: Any] {
+        ["kind": "redeem", "item": item, "qty": qty, "coins": coins]
+    }
+    static func fulfil(record: String) -> [String: Any] { ["kind": "fulfil", "record": record] }
     /// A chat follows its people on the map, or stops (its author or an administrator, chat.rs Track).
     static func track(chat: String, on: Bool) -> [String: Any] { ["kind": "track", "chat": chat, "on": on] }
     /// The window a followed chat's people send their place in, or none (0): the same voices (chat.rs TrackWindow).
@@ -507,4 +568,7 @@ enum MTBizCommand {
     static let voiceSource = 2
     /// A department of none: sixteen zero bytes.
     static let noDept = String(repeating: "0", count: 32)
+    /// A pay's kinds (the core's PAY_SALARY, PAY_BONUS).
+    static let salaryPay = 1
+    static let bonusPay = 2
 }

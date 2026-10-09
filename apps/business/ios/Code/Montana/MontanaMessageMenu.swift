@@ -208,6 +208,8 @@ struct MessageContextOverlay: View {
     /// The set's link: the set's own name and its title, and not one address of anybody (22.09).
     var onCopyLink: (() -> Void)? = nil
     var onReport: () -> Void = {}   // Guideline 1.2: the peer's letter can be reported from its menu
+    /// COINS GIVEN ON THE CORRESPONDENT'S LETTER (the author's word 03.10 13:40): one by default, five or ten by choice.
+    var onCoin: ((Int) -> Void)? = nil
     /// The profile's menu (the author's word 15.09): the SAME cloud as the chat's, other rows —
     /// show in chat, forward, delete, select. Set = profile mode.
     var onShowInChat: (() -> Void)? = nil
@@ -216,7 +218,7 @@ struct MessageContextOverlay: View {
     /// style — the person chose blindly. The question stands where the long-press answer stood.
     let canDeleteForEveryone: Bool
     let ladder: Bool
-    /// A row its caller keeps is offered no deletion.
+    /// A coin letter of mine on its way is offered no deletion (the coin audit's first point, 05.10.2026 21:4x MSK: MTCoinSend.travels).
     var canDelete = true
     var onDeleteMine: () -> Void
     var onDeleteEveryone: () -> Void
@@ -434,6 +436,41 @@ struct MessageContextOverlay: View {
                             divider
                         }
                         row("Reply", "arrowshape.turn.up.left", action: onReply)
+                        if let onCoin, !message.isMine {
+                            divider
+                            HStack(spacing: 6) {
+                                Button { MTReactClock.act = "row:coin"; onCoin(1) } label: {
+                                    HStack(spacing: 8) {
+                                        Text("Give a coin").foregroundColor(.white)
+                                        Spacer(minLength: 0)
+                                        MTMintCoin(spinning: false, side: 20)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                            }
+                            .font(.system(size: 16))
+                            .padding(.horizontal, 14).padding(.top, 9)
+                            // THE THIRTEEN BOXES OF π AS THE AMOUNTS GIVEN (the author's word 03.10 22:02: «when sending, the same thirteen
+                            // boxes in the reaction»): every box the balance holds is one tap; the rest stand dimmed.
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 6) {
+                                    ForEach(MTPiLevels.all, id: \.self) { n in
+                                        let held = n <= MTCoinBook.ledger.balance
+                                        Button { MTReactClock.act = "row:coin\(n)"; onCoin(n) } label: {
+                                            // USER-DATA: a box of coins to give, in its short form
+                                            Text(verbatim: "+" + MTPiLevels.short(n)).font(.system(size: 15, weight: .semibold).monospacedDigit())
+                                                .foregroundColor(.white)
+                                                .padding(.horizontal, 10).padding(.vertical, 6)
+                                                .background(Color(white: 0.3), in: Capsule())
+                                        }
+                                        .disabled(!held)
+                                        .opacity(held ? 1 : 0.4)
+                                    }
+                                }
+                                .padding(.horizontal, 14)
+                            }
+                            .padding(.bottom, 9)
+                        }
                         if let onEditSticker {
                             divider; row("Edit sticker", "pencil.tip.crop.circle", action: onEditSticker)
                         }

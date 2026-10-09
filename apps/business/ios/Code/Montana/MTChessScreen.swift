@@ -137,9 +137,11 @@ enum MTChessWords {
     }
     /// THE INVITATION SAYS WHO PLAYS WHICH COLOUR (29.09): read from the letter alone -- the one who invites plays white
     /// (MTChessGame.whiteIsMine) -- with the clock the game is played under.
-    /// The invitation's seat and clock (06.10).
+    /// The invitation's seat and clock, and its stake when it names one (06.10).
     static func seat(_ letter: MTChessLetter, mine: Bool) -> String {
-        MTRowLetter.chessSeat(mine: mine, seconds: letter.seconds ?? 0)
+        let seat = MTRowLetter.chessSeat(mine: mine, seconds: letter.seconds ?? 0)
+        guard let stake = letter.stake, 0 < stake else { return seat }
+        return seat + " · " + String(localized: "stake \(MTCoinText.count(stake))", bundle: MTLanguage.bundle)
     }
     static func piece(_ p: MTChessPiece) -> String {
         switch (p.side, p.kind) {
@@ -186,12 +188,24 @@ enum MTChessSend {
     @MainActor static func letter(_ packet: MTChessLetter, to chat: Chat, store: ChatStore) -> Bool {
         let chat = conversation(chat, store: store)
         let conv = chat.convId ?? chat.name
+        // THE GAME'S POT (the author's words 06.10.2026 19:0x-19:1x MSK, MTChessCoins): a move of a game with a pot names the coins
+        // it mints into it, and the invitation's stake and the guest's acceptance leave the book into it before the letter leaves.
+        var packet = packet
+        let invite = packet.kind == .invite ? packet
+            : MTChessRecord.entries(store.messages[chat.name] ?? []).first { $0.letter.kind == .invite && $0.letter.game == packet.game }?.letter
+        let pooled = invite?.pooled ?? false
+        if pooled, packet.kind == .move { packet.coins = MTChessCoins.moveCoins() }
+        let stake = pooled && (packet.kind == .invite || packet.kind == .accept) ? invite?.stake ?? 0 : 0
         // A REFUSED LETTER SAYS WHY (03.10, T1 and the iPhone 15 on 2082: T1 held both invitations and stood on the board, and
         // not one chess letter left it -- the road refused in silence and the diary had no word of it).
         let why = chat.isGroup ? "group" : ChatStore.isLocalRoom(chat.name) ? "room" : !MontanaConv.holds(conv) ? "no-pipe"
             : store.refuses(conv) ? "refused" : store.closedChats.contains(conv) ? "closed" : !store.historyLoaded ? "history" : ""
         guard why.isEmpty, let text = packet.text(title: String(localized: "Chess", bundle: MTLanguage.bundle)) else {
             MontanaP2PTrace.mark("chess_refused", "kind=\(packet.kind.rawValue) why=\(why.isEmpty ? "text" : why) conv=\(String(conv.prefix(10))) chat=\(String(chat.name.prefix(10)))")
+            return false
+        }
+        guard stake == 0 || MTChessCoins.put(stake, game: packet.game, peer: chat.name) else {
+            MontanaP2PTrace.mark("chess_refused", "kind=\(packet.kind.rawValue) why=stake")
             return false
         }
         MontanaP2PTrace.mark("chess_tx", "kind=\(packet.kind.rawValue) game=\(String(packet.game.prefix(8))) conv=\(String(conv.prefix(10)))")
@@ -222,9 +236,10 @@ enum MTChessSend {
         let all = MTChessRecord.entries(rows)
         return MTChessGame(entries: all.filter { $0.letter.game == game }, game: game)?.replaced(by: MTChessGame.current(all))
     }
-    @MainActor static func invite(to chat: Chat, seconds: Int, store: ChatStore) -> String? {
+    @MainActor static func invite(to chat: Chat, seconds: Int, stake: Int = 0, store: ChatStore) -> String? {
         let id = UUID().uuidString.lowercased()
-        let packet = MTChessLetter(game: id, id: id, parent: "", kind: .invite, at: MTChessWords.now, seconds: seconds)
+        var packet = MTChessLetter(game: id, id: id, parent: "", kind: .invite, at: MTChessWords.now, seconds: seconds)
+        if 0 < stake { packet.stake = min(stake, MTChessLetter.mostCoins) }
         return letter(packet, to: chat, store: store) ? id : nil
     }
     /// ENTERING THE GAME IS THE ACCEPTANCE (the author's word 29.09: «when the correspondent taps the invitation, the game
@@ -265,33 +280,141 @@ enum MTChessSend {
     @MainActor static var meetingLife: Int64 { Int64(ChatStore.presenceLife * 1000) }
 }
 
-/// THE TIMER (the author's word 04.10.2026 00:10 MSK: «a game Timer for offline chess: on one phone switch whose move it is»): a
-/// chess clock for two at one board. Each half is one player's -- the upper one turned to the player across the table -- and a tap
-/// on one's own half ends one's move; the side to move thinks and its clock runs.
+/// THE GAME'S COINS (the author's word 03.10.2026 22:35 MSK: «every move +1 coin to each, the whole sum to the winner»): read
+/// from the game's own letters, so both phones count alike. Every move the replay accepted pays one coin to each player -- this
+/// phone credits its own, once per move letter; a won game moves the loser's coins of that game to the winner (the loser's
+/// phone gives them up, the winner's takes them), so the winner holds the whole sum and the loser none; a draw or an ended game
+/// leaves each their own. Moves made before the word are not paid back.
+enum MTChessCoins {
+    static let movePrefix = "chess:"
+    static let wonPrefix = "chess-won:"
+    static let lostPrefix = "chess-lost:"
+    /// THE GAME'S POT (the author's words 06.10.2026 19:0x-19:1x MSK: «in chess every move x1000 to the level -- it forms the
+    /// winner's common pool of the game; one may set one's own stake in the offer to play»). A game invited from the word on
+    /// (MTChessLetter.pooled) mints nothing into a book while it is played: every move names its coins -- its maker's level
+    /// times a thousand -- into the pot, and each side's stake leaves its book into the pot as its letter leaves (put). At the
+    /// end the replay both phones share pays the pot (pay): the winner mints every coin of the moves and takes both stakes; the
+    /// loser takes nothing; a draw, a declined, ended or replaced game gives each side its own moves' coins and its own stake
+    /// back. No coin is born on two phones, and none from a stake that never left a book.
+    static let moveTimes = 1000
+    static let potPrefix = "chess-pot:"
+    static let stakePrefix = "chess-stake:"
+    static let backPrefix = "chess-back:"
+    /// Every name a coin of chess moves under (the wallet's source of chess, MTTimeChain.source).
+    static func owns(_ ref: String) -> Bool {
+        [movePrefix, wonPrefix, lostPrefix, potPrefix, stakePrefix, backPrefix].contains { ref.hasPrefix($0) }
+    }
+    /// The coins a move of this phone mints into the pot: the level now, times a thousand.
+    @MainActor static func moveCoins() -> Int {
+        let (c, over) = MTPiLevels.multiplier(MTCoinBook.ledger.balance).multipliedReportingOverflow(by: moveTimes)
+        return over ? 0 : min(c, MTChessLetter.mostCoins)
+    }
+    /// The stake leaves the book into the game's pot; a stake already put is not put twice; a short balance refuses it.
+    @MainActor static func put(_ stake: Int, game: String, peer: String) -> Bool {
+        let book = MTCoinBook.ledger
+        if stake <= book.coins(on: potPrefix + game) { return true }
+        return book.spend(stake, on: potPrefix + game, peer: peer, ref: stakePrefix + game)
+    }
+    /// The author's word, 03.10.2026 19:35:00 UTC, in the replay's milliseconds.
+    static let since: Int64 = 1_791_056_100_000
+    @MainActor static func settle(chat: String, rows: [Message]) {
+        let all = MTChessRecord.entries(rows)
+        guard !all.isEmpty else { return }
+        let book = MTCoinBook.ledger
+        for (id, entries) in Dictionary(grouping: all, by: { $0.letter.game }) {
+            guard let game = MTChessGame(entries: entries, game: id) else { continue }
+            if game.pooled { pay(game.replaced(by: MTChessGame.current(all)), chat: chat, book: book); continue }
+            let moves = entries.filter { $0.letter.kind == .move && since <= $0.letter.at && game.acceptedIDs.contains($0.letter.id) }
+                .map { movePrefix + $0.letter.id }
+            guard !moves.isEmpty else { continue }
+            let fresh = book.earn(moves, times: 1)
+            if 0 < fresh {
+                MontanaP2PTrace.mark("chess_coin", "game=\(String(id.prefix(8))) moves=\(moves.count)")
+            }
+            let won: Bool? = game.status == .whiteWon ? game.whiteIsMine : game.status == .blackWon ? !game.whiteIsMine : nil
+            guard let won, since <= game.last.at else { continue }
+            if won {
+                if book.receive(moves.count, from: chat, ref: wonPrefix + id, on: nil) {
+                    MontanaP2PTrace.mark("chess_coin", "game=\(String(id.prefix(8))) won=\(moves.count)")
+                }
+            } else if book.spend(min(moves.count, book.balance), on: movePrefix + id, peer: chat, ref: lostPrefix + id) {
+                MontanaP2PTrace.mark("chess_coin", "game=\(String(id.prefix(8))) lost=\(moves.count)")
+            }
+        }
+    }
+    /// THIS SIDE'S SHARE OF A FINISHED POT: read from the replay both phones share -- what the pot mints to this side, what comes
+    /// back to it, and what it put. The winner mints every coin of the moves and takes both stakes; the loser takes nothing; a draw,
+    /// a declined, ended or replaced game gives each side its own moves' coins and its own stake back.
+    static func share(_ game: MTChessGame) -> (minted: Int, back: Int, put: Int)? {
+        guard game.pooled, game.status.finished else { return nil }
+        let won: Bool? = game.status == .whiteWon ? game.whiteIsMine : game.status == .blackWon ? !game.whiteIsMine : nil
+        // The inviter put its stake as the invitation left, the guest as its acceptance did.
+        let mineIn = game.whiteIsMine || game.accepted ? game.stake : 0
+        let theirsIn = !game.whiteIsMine || game.accepted ? game.stake : 0
+        switch won {
+        case true?: return (game.mintedMine + game.mintedTheirs, mineIn + theirsIn, mineIn)
+        case false?: return (0, 0, mineIn)
+        case nil: return (game.mintedMine, mineIn, mineIn)
+        }
+    }
+    /// WHAT THE GAME GAVE OR TOOK (the author's word 06.10.2026 23:2x MSK: «in the chat after the game show the coins' transfer or
+    /// top-up, plainly; fix the minuses and the pluses»): this side's share against what it put -- the same reading pay books by.
+    static func net(_ game: MTChessGame) -> Int? {
+        guard let s = share(game) else { return nil }
+        return s.minted + s.back - s.put
+    }
+    /// THE POT PAID AT THE END: each phone books its own side once, by the game's names.
+    @MainActor private static func pay(_ game: MTChessGame, chat: String, book: any MTCoinLedger) {
+        guard let s = share(game) else { return }
+        let got = 0 < s.minted ? book.mint(s.minted, ref: potPrefix + game.id, peer: nil) : 0
+        let returned = 0 < s.back && book.receive(s.back, from: chat, ref: backPrefix + game.id, on: nil)
+        if 0 < got || returned {
+            MontanaP2PTrace.mark("chess_coin", "game=\(String(game.id.prefix(8))) pot minted=\(got) back=\(returned ? s.back : 0) put=\(s.put)")
+        }
+    }
+}
+
+/// THE TIMER (the author's word 04.10.2026 00:10 MSK: «a game Timer for offline chess: on one phone switch whose move it is; the
+/// one whose move it is does not mint, the opponent mints from the switch -- and play chess offline»): a chess clock for two at one
+/// board. Each half is one player's -- the upper one turned to the player across the table -- and a tap on one's own half ends
+/// one's move. The side to move thinks and its clock runs; the other side mints one coin a second from the moment the move passed
+/// to its opponent. The lower half is this phone's person: every second of its minting is born in the one book as it is lived,
+/// in the Timer's own window of τ1, and its count shows what the book took; the upper half's coins are the opponent's count,
+/// shown and never booked here, so they never rise at the sides.
+/// THE SECOND IS BORN WHEN IT IS LIVED (the author's word 04.10.2026 18:34 MSK: «polish by the constitution, 0, 4, 5, 6»; point 5,
+/// the Economy of Time): the half's seconds were kept and booked as one count when the move passed, and the book priced that count
+/// as a single second -- sixty seconds at level 5 showed 300 coins and booked 13.
 struct MTChessTimer: View {
     enum Side { case top, bottom }
+    static let refPrefix = "timer:"
     @State private var turn: Side?
     @State private var used: [Side: Int64] = [:]
+    @State private var coins: [Side: Int] = [:]
     var body: some View {
         VStack(spacing: 0) {
             half(.top).rotationEffect(.degrees(180))
             Divider()
             half(.bottom)
         }
-        .montanaPageGround()
+        .montanaPageGround()   // no sides' coins: they stand on the Time Coins page alone (06.10)
         .navigationTitle("Timer")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: turn) { await run() }
     }
     private static func word(_ turn: Side?, moving: Bool) -> LocalizedStringKey {
-        turn == nil ? "Tap to start" : moving ? "Your move" : "Waiting"
+        turn == nil ? "Tap to start" : moving ? "Your move" : "Minting"
     }
     private func half(_ side: Side) -> some View {
-        let moving = turn == side
+        let moving = turn == side, minting = turn != nil && turn != side
         return Button { pass(side) } label: {
             VStack(spacing: 12) {
                 // USER-DATA: the time this side has thought, minutes and seconds
                 Text(verbatim: MTChessWords.clock(used[side] ?? 0)).font(.system(size: 64, weight: .semibold).monospacedDigit())
+                HStack(spacing: 8) {
+                    MTMintCoin(spinning: minting, side: 28)
+                    // USER-DATA: the coins this side minted, a number
+                    Text(verbatim: MTCoinText.count(coins[side] ?? 0)).font(.title2.monospacedDigit())
+                }
                 Text(Self.word(turn, moving: moving)).font(.headline).foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -309,7 +432,17 @@ struct MTChessTimer: View {
         while let side = turn, !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard !Task.isCancelled, turn == side else { return }
+            let waiting: Side = side == .top ? .bottom : .top
             used[side, default: 0] += 1000
+            // This phone's half: the second born in the book now, at the level's rate and the second's price; the other half is the
+            // opponent's count, one a second.
+            if waiting == .bottom {
+                let c = MTCoinBook.ledger.mintInWindow(1, prefix: Self.refPrefix, seconds: 1)
+                coins[.bottom, default: 0] += c
+                MontanaP2PTrace.markFolded("chess_timer", "coins=\(c)", window: 60)
+            } else {
+                coins[.top, default: 0] += 1
+            }
         }
     }
 }
@@ -330,7 +463,15 @@ struct MTChessTimer: View {
     private var answering: Task<Void, Never>?
     private static var now: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
-    private init() {
+    private init() { load() }
+    /// A COPY LAID THE GAME UNDER THE LIVING ONE (09.10): the engine's answer in flight is let go and the game is read again,
+    /// or the next move writes the game of the moment before over the one the copy laid.
+    func reread() {
+        answering?.cancel(); answering = nil; thinking = false
+        game = nil; entries = []; level = 3
+        load()
+    }
+    private func load() {
         guard let data = UserDefaults.standard.data(forKey: Self.gameKey),
               let kept = try? JSONDecoder().decode(Kept.self, from: data), kept.letters.count == kept.mine.count,
               let first = kept.letters.first else { return }
@@ -339,7 +480,8 @@ struct MTChessTimer: View {
         let snapshot = entries, id = first.game
         Task { [weak self] in
             let built = await Task.detached(priority: .userInitiated) { MTChessGame(entries: snapshot, game: id) }.value
-            guard let self, self.entries.count == snapshot.count else { return }
+            // a game read again meanwhile is not this one: its own build lands
+            guard let self, self.entries.count == snapshot.count, self.entries.first?.letter.game == id else { return }
             self.game = built
             self.answerIfDue()
         }
@@ -507,8 +649,8 @@ struct MTChessPage: View {
             }
         }
         .sheet(isPresented: $newGame) {
-            MTChessNewGame(invite: { chat, seconds in
-                guard let game = MTChessSend.invite(to: chat, seconds: seconds, store: store) else { return false }
+            MTChessNewGame(invite: { chat, seconds, stake in
+                guard let game = MTChessSend.invite(to: chat, seconds: seconds, stake: stake, store: store) else { return false }
                 newGame = false; path.append(.game(chat: chat.name, id: game)); return true
             }, train: { level, white in
                 computer.start(level: level, white: white)
@@ -528,16 +670,25 @@ struct MTChessPage: View {
 /// set before the game by a slider»): the computer with its level on the platform's slider and the colour chosen by its
 /// piece, then the correspondents with the clock of the game.
 private struct MTChessNewGame: View {
-    let invite: (Chat, Int) -> Bool
+    let invite: (Chat, Int, Int) -> Bool
     let train: (Int, Bool) -> Void
     @EnvironmentObject private var store: ChatStore
     @Environment(\.dismiss) private var dismiss
     @AppStorage(MTChessComputer.levelKey) private var level = 3
     @State private var white = true
     @State private var seconds = MTChessSend.chatClock
+    @ObservedObject private var book = MTLocalCoinLedger.shared
+    /// THE STAKE BESIDE THE OPPONENT, AS AN OFFER (the author's word 06.10.2026 23:0x MSK: «the stake, like the sum of a send, is
+    /// written beside the opponent as an offer»): the coins typed beside a correspondent are what that invitation asks each side
+    /// to put into the game's pot (MTChessCoins).
+    @State private var stakes: [String: String] = [:]
     @State private var query = ""
     @State private var failed = false
-    private func offer(_ chat: Chat) { failed = !invite(chat, seconds) }
+    private func stakeCoins(_ ref: String) -> Int { Int(stakes[ref] ?? "") ?? 0 }
+    private func stakeField(_ ref: String) -> Binding<String> {
+        Binding(get: { stakes[ref] ?? "" }, set: { typed in stakes[ref] = String(typed.filter { $0.isASCII && $0.isNumber }.prefix(13)) })
+    }
+    private func offer(_ chat: Chat, _ ref: String) { failed = !invite(chat, seconds, stakeCoins(ref)) }
     private var people: [Chat] {
         var seen: Set<String> = []
         return ((store.chatsShelf() ?? []) + store.storedArchived()).map {
@@ -587,30 +738,48 @@ private struct MTChessNewGame: View {
                         ForEach(MTChessLetter.timeControls, id: \.self) { Text(MTChessWords.control($0)).tag($0) }
                     }
                 }
+                // THE STAKE (the author's word 06.10.2026 19:1x MSK: «one may set one's own stake in the offer to play»): typed beside
+                // each correspondent, as the coins of a send are (MTCoinSendSheet); the winner takes the whole pot (MTChessCoins).
                 Section {
                     if people.isEmpty { Text("No correspondents found").foregroundStyle(.secondary) }
                     ForEach(people) { chat in
-                        Button { offer(chat) } label: {
-                            HStack(spacing: 12) {
-                                MTChatAvatar(chat: chat, size: 44)
-                                Text(store.title(for: chat)).lineLimit(1)
-                                Spacer(minLength: 0)
-                                Image(systemName: "paperplane").frame(minWidth: 44, minHeight: 44)
+                        let ref = chat.convId ?? chat.name
+                        let short = book.balance < stakeCoins(ref)
+                        HStack(spacing: 12) {
+                            Button { offer(chat, ref) } label: {
+                                HStack(spacing: 12) {
+                                    MTChatAvatar(chat: chat, size: 44)
+                                    Text(store.title(for: chat)).lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .frame(minHeight: 44).contentShape(Rectangle())
                             }
-                            .frame(minHeight: 44).contentShape(Rectangle())
+                            .buttonStyle(.plain)
+                            .disabled(!store.historyLoaded || short)
+                            TextField("0", text: stakeField(ref))
+                                .keyboardType(.numberPad)
+                                .multilineTextAlignment(.trailing)
+                                .font(.body.monospacedDigit())
+                                .frame(width: 96, height: 44)
+                                .accessibilityLabel(Text("Stake"))
+                            Button { offer(chat, ref) } label: { Image(systemName: "paperplane") }
+                                .buttonStyle(.plain)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .disabled(!store.historyLoaded || short)
+                                .opacity(short ? 0.4 : 1)
                         }
-                        .buttonStyle(.plain)
-                        .disabled(!store.historyLoaded)
                     }
                 } header: {
                     Text("Invite a correspondent")
+                } footer: {
+                    Text("Both players put the stake into the game's pot, and every move mints its maker's level times a thousand into it. The winner takes the whole pot; a draw gives each their own back.")
                 }
             }
             .searchable(text: $query)
             // THE KEYBOARD GOES WITH THE FINGER (the author's word 06.10.2026 23:0x MSK: «let the keyboard fold normally on the page
-            // of a new game»): a drag of the list folds it.
+            // of a new game»): the number pad has no return key; a drag of the list folds it, as on the send (MTCoinSendSheet).
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("New game")
+            .montanaBalanceTitle("New game")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { MontanaBarMark(glyph: "xmark", label: "Close") { dismiss() } } }
             .alert("Invitation could not be sent", isPresented: $failed) { Button("OK", role: .cancel) {} }
@@ -681,7 +850,9 @@ struct MTChessGameScreen: View {
     /// A NEW GAME BEGINS WHEN THE PAIR'S GAME IS OVER (30.09 -- the plate and the menu read this one rule): a game that stands
     /// keeps the pair, so its end comes first (End game); the training game begins anew at any moment.
     private var nextGame: Bool { isComputer || pairOver }
-    // The body stays apart from the board, so the board's own long expression keeps the length the compiler types in reasonable time.
+    // THE SIDES' COINS STAND ON THE TIME COINS PAGE ALONE (the author's word 06.10.2026 19:0x MSK: «in chess take away the auto
+    // animation of minting -- it is only on the page of Time Coins»): the board shows no minting that happens elsewhere. The body
+    // stays apart from the board, so the board's own long expression keeps the length the compiler types in reasonable time.
     var body: some View { board }
     private var board: some View {
         Group {
@@ -747,6 +918,13 @@ struct MTChessGameScreen: View {
 
     @ToolbarContentBuilder private var bar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) { gameMenu }
+        if let game, game.pooled {
+            if #available(iOS 26.0, *) {
+                ToolbarItem(placement: .principal) { MTChessPotTitle(game: game) }.sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .principal) { MTChessPotTitle(game: game) }
+            }
+        }
     }
 
     private func table(_ game: MTChessGame, width: CGFloat) -> some View {
@@ -820,6 +998,18 @@ struct MTChessGameScreen: View {
             Text(MTChessWords.status(game, computer: isComputer))
                 .font(.headline).multilineTextAlignment(.center).lineLimit(3)
                 .padding(.top, 6)
+            // THE POT (06.10, MTChessCoins): what the game holds for its winner -- the stakes and the coins its moves minted.
+            // Its two parts stand at the game's name through the whole game (MTChessPotTitle, the author's word 06.10 23:1x).
+            if game.pooled, 0 < game.pot {
+                Text("Pot: \(MTCoinText.count(game.pot))").font(.subheadline.monospacedDigit()).lineLimit(1).minimumScaleFactor(0.75)
+            }
+            // THE BALANCE AT THE STAKE (the author's word 06.10.2026 22:1x MSK): the guest asked to put a stake sees what it holds.
+            if game.pooled, game.status == .invited, !game.whiteIsMine, 0 < game.stake {
+                MTBalanceCaption()
+                if MTCoinBook.ledger.balance < game.stake {
+                    Text("Not enough coins for the stake").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             HStack(spacing: 8) {
                 if game.status == .invited {
                     if !game.whiteIsMine {
@@ -1100,13 +1290,40 @@ struct MTChessGameScreen: View {
     private func again(_ game: MTChessGame) {
         browsing = nil; selected = nil; promotion = []
         if isComputer { computer.start(level: computer.level, white: game.whiteIsMine); return }
-        guard let chat, let id = MTChessSend.invite(to: chat, seconds: game.seconds, store: store) else { failed = true; return }
+        guard let chat, let id = MTChessSend.invite(to: chat, seconds: game.seconds, stake: game.stake, store: store) else { failed = true; return }
         switched = id
     }
 }
 
 /// The plate a game's state stands on over the board: the app's own glass where the native skin runs (MTGlassPlate, one
 /// owner of a plate's glass), the bar's material elsewhere -- as the posts' plates are drawn (MTBoardPostPlate).
+/// THE POT'S TWO PARTS AT THE GAME'S NAME (the author's word 06.10.2026 23:1x MSK: «left of the chess title show the total stake,
+/// right of the word chess the moves' pool, so it is plain how many coins of which kind are at play; fit any sums into these
+/// bubbles»): the stakes left of «Chess» and the moves' pool right of it, a bubble each, seen through the whole game. A bubble
+/// writes the whole count where it fits and the short form where it does not (ViewThatFits), so no sum is ever cut.
+private struct MTChessPotTitle: View {
+    let game: MTChessGame
+    var body: some View {
+        HStack(spacing: 8) {
+            bubble(game.stakes).accessibilityLabel(Text("Total stake: \(MTCoinText.count(game.stakes))"))
+            Text("Chess").font(.headline).lineLimit(1).layoutPriority(1)
+            bubble(game.movesPool).accessibilityLabel(Text("Move pool: \(MTCoinText.count(game.movesPool))"))
+        }
+    }
+    private func bubble(_ coins: Int) -> some View {
+        ViewThatFits(in: .horizontal) {
+            // USER-DATA: a count of coins, whole
+            Text(verbatim: MTCoinText.count(coins))
+            // USER-DATA: the same count in its short form
+            Text(verbatim: MTPiLevels.short(coins))
+        }
+        .font(.caption.weight(.semibold).monospacedDigit())
+        .lineLimit(1)
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Color(.tertiarySystemFill), in: Capsule())
+    }
+}
+
 private struct MTChessStatePlate: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)

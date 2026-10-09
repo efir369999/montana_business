@@ -533,15 +533,16 @@ enum MontanaNativeBubble {
 
 /// THE AUTHOR'S CREST AS THE APP NAMES ITSELF (the author's word 06.10.2026 13:5x MSK: «in the next build fix the logo, the icon,
 /// the sign-in page and the ones after it, so that all is right»). His file, byte for byte in AppIconPicture, carries its own
-/// rounded tile with a glowing rim on a black field (the tile from x 66 to 1164 and y 58 to 1159 of 1254, its centre 12 px left
-/// and 18.5 px above the file's); drawn whole it stood as an icon inside an icon, and on a coloured ground as a black square.
-/// Shown here is the tile alone: the file scaled so its rim passes the frame's edge, the tile's centre on the frame's, cut by the
-/// icon's own shape -- the very cut the home screen makes of AppIcon.icon (its layer: scale 1.17, translation 11.5 and 17.7
-/// points of 1024); the two move together.
+/// rounded tile with a glowing rim on a black field (the file of 09.10.2026 16:49, Media/Montana_Business_Square.png, 56092eb9: the
+/// tile from x 75 to 1174 and y 79 to 1151 of 1254, its centre 2.5 px left and 12 px above the file's); drawn whole it stood as an
+/// icon inside an icon, and on a coloured ground as a black square. Shown here is the tile alone: the file scaled so the tile fills
+/// the frame, the tile's centre on the frame's, cut by the icon's own shape -- the very cut the home screen makes of AppIcon.icon
+/// (its layer: scale 0.9543, translation 2.4 and 11.5 points of 1024, the author's word 09.10 13:3x «by Montana's reference»);
+/// the two move together.
 struct MTAppCrest: View {
     static let asset = "AppIconPicture"
-    static let scale: CGFloat = 1.17
-    static let shift = CGSize(width: 12.0 / 1254, height: 18.5 / 1254)
+    static let scale: CGFloat = 1254.0 / 1073
+    static let shift = CGSize(width: 2.5 / 1254, height: 12.0 / 1254)
     static let corner: CGFloat = 0.2237
     var body: some View {
         GeometryReader { g in
@@ -570,13 +571,37 @@ struct MTAppCrest: View {
     }
 }
 
-/// The Time mark used when a person has not chosen a picture.  It is deliberately not a fallback
-/// to somebody else's face: absence is a complete, stable visual answer of its own.
+/// THE AUTHOR'S ROUND FACE FOR THE ROUND PLACES (the author's word 09.10.2026 13:5x MSK: «Media/Montana_Business_Round.png -- use it
+/// for the round places of the icon: the time panel, the music, the avatars where the app's icon stands»). His file of 09.10.2026
+/// 16:49 (Media/Montana_Business_Round.png, 35781741), byte for byte in AppIconRound, is a glass disc on a black field (the disc from
+/// x 59 to 1182 and y 57 to 1166 of 1254, its centre 6.5 px left and 15.5 px above the file's): drawn so the disc fills the round
+/// frame, its centre on the frame's, and cut by a circle. The tile (MTAppCrest) stays for the square places.
+struct MTAppRound: View {
+    static let asset = "AppIconRound"
+    static let scale: CGFloat = 1254.0 / 1110
+    static let shift = CGSize(width: 6.5 / 1254, height: 15.5 / 1254)
+    var body: some View {
+        GeometryReader { g in
+            let side = min(g.size.width, g.size.height)
+            Image(Self.asset).resizable().scaledToFit()
+                .frame(width: side * Self.scale, height: side * Self.scale)
+                .offset(x: side * Self.scale * Self.shift.width, y: side * Self.scale * Self.shift.height)
+                .frame(width: side, height: side)
+                .clipShape(Circle())
+                .frame(width: g.size.width, height: g.size.height)
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The face of a person who has not chosen a picture. It is deliberately not a fallback to somebody else's face: absence is a
+/// complete, stable visual answer of its own. BUSINESS'S OWN ROUND FACE (the author's word 09.10.2026 17:4x MSK: «and the avatars'
+/// placeholder in Business -- its own round one too»): the author's round file (MTAppRound), in the face's own figure.
 struct MTTimeMarkAvatar: View {
     let side: CGFloat
     var body: some View {
-        MontanaHexagon().fill(Color.black)
-            .overlay(Image("Logo").resizable().scaledToFit().padding(side * 0.36))   // the sign at 28% of the side (the author's word 30.09: half of 56%)
+        MTAppRound()
             .overlay(MontanaHexagon().stroke(Color.white.opacity(0.35), lineWidth: 1))
             .frame(width: side, height: side)
     }
@@ -623,7 +648,7 @@ struct AvatarCircle: View {
             if let image {
                 Image(uiImage: image).resizable().scaledToFill()   // the picture in hand
             } else if photoURL == MTAppCrest.asset {
-                MTAppCrest()                                  // the app's own face: its tile, never the black field around it
+                MTAppRound()                                  // the app's own face in a round place: the author's round file (09.10)
             } else if let s = photoURL, Self.isAsset(s) {
                 Image(s).resizable().scaledToFill()           // built-in photo
             } else if let s = photoURL, size <= 64, let ui = MontanaSmallPicture.image(s) {
