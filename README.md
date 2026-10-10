@@ -43,26 +43,30 @@ the public record of its releases and changes. MT Business is part of the Montan
 | Path | What it is |
 |---|---|
 | [core/](core/) | The protocol core: specification, reference implementation and the client core with `mt-business`; see [core/README.md](core/README.md) |
-| [apps/business/ios/](apps/business/ios/) | MT Business for iPhone, iPad and Mac, build 68 |
-| [apps/business/android/](apps/business/android/) | MT Business for Android, build 39 |
-| [RELEASES.md](RELEASES.md) | Every published build, with its file, digest and source commit |
-| [CHANGELOG.md](CHANGELOG.md) | Every commit of the iOS source, with its build, system and source tree |
+| [apps/business/ios/](apps/business/ios/) | MT Business for iPhone, iPad and Mac |
+| [apps/business/android/](apps/business/android/) | MT Business for Android |
+| [RELEASES.md](RELEASES.md) | The build and the source commit of every folder, written by the publisher with the folder itself; every published binary with its digest |
+| [CHANGELOG.md](CHANGELOG.md) | The commits of the iOS source with their build, system and source tree, as the log stood on 2026-10-06, when it stopped being published |
 | [SECURITY.md](SECURITY.md) | How to report a weakness, and what is in scope |
 | [.github/](.github/ISSUE_TEMPLATE/bug_report.md) | The bug report template |
 
 ## Build from source
 
+Xcode 26.2 on macOS 15.7 or later, Rust 1.92.0 through rustup with the device target
+(`rustup target add aarch64-apple-ios --toolchain 1.92.0`). The core is built for the device, so the application is built for a
+device: with your own team for signing, or with signing off to check that the source compiles.
+
 ```
-cd core/Code
-cargo test --workspace --release
-cd ../../apps/business/ios
+cd apps/business/ios
 MONTANA_CORE_SRC="$PWD/../../../core/Code/crates/mt-bindings" bash scripts/build-core.sh
 MONTANA_PROTOCOL_CORE="$PWD/../../../core/Montana-Core" bash scripts/build-protocol-core.sh
 bash fetch-webrtc.sh
+xcodebuild build -project Montana.xcodeproj -scheme Montana -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO
 ```
 
-Then open `Montana.xcodeproj` in Xcode 26.2 and choose your own team for signing. Node endpoints in the tree are
-documentation addresses (RFC 5737); the released build carries the live ones.
+MT Business also links the VPN's two engines, built by the scripts in `scripts/xray-ios` (Go) and `scripts/hev-ios`; those
+scripts are published with the next build. Node endpoints in the tree are documentation addresses (RFC 5737); the released
+build carries the live ones.
 
 ## Join the beta
 
@@ -71,7 +75,7 @@ documentation addresses (RFC 5737); the released build carries the live ones.
 | Platform | iPhone and iPad with iOS 17.2 or later; Apple silicon Mac |
 | Distribution | TestFlight, public link; App Store after review |
 | Link | https://testflight.apple.com/join/MSMfey6f |
-| TestFlight | 1.0; the newest build is 68 (2026-10-08) |
+| TestFlight | 1.0; the public link carries the newest build |
 | Feedback | GitHub Issues in this repository, or contact@montana.quest |
 | Privacy policy | https://montana.xxx/privacy/ |
 
@@ -146,19 +150,8 @@ go by e-mail, not into an issue: see [SECURITY.md](SECURITY.md).
 
 - A phone number is confirmed through a third-party messaging service; where that service is unreachable, sign in by e-mail
   or with 24 words.
-- History lives on the device; deleting the application erases the history on that device. An optional daily copy goes only to
-  your own iCloud, sealed under a key that only your 24 words open.
+- History lives on the device; deleting the application erases the history on that device. A copy sealed under a key only your
+  24 words open is kept by the people you write to (on by default; the application asks once, at the first opening), and can
+  be kept in your own iCloud.
 - The coins and the wallet are not yet shared with the Montana messenger.
 - On Android the Montana Messenger carries the organisations; the Android source of MT Business is in `apps/business/android`.
-
-## Latest changes
-
-From [CHANGELOG.md](CHANGELOG.md).
-
-- **2026-10-06 19:29 UTC** — The Business TestFlight road ends at the upload; the distribution runs as its next bare step, outside the heavy gate (commit `e6048b270e87`)
-- **2026-10-06 19:09 UTC** — Advance Montana Business build number to 46 (commit `5a06629e1716`)
-- **2026-10-06 19:09 UTC** — Business notifications: the system answer is read at every entry and return, asked again while unanswered, a refusal stands as a crossed speaker (the Messenger 562ac469) (commit `92bf189444e6`)
-- **2026-10-06 17:53 UTC** — Advance Montana Business build number to 45 (commit `11e035831f1e`)
-- **2026-10-06 17:53 UTC** — Business sign-in asks both doors of the service and asks again at Next; Forget this device takes the number out of the directory; the contacts line tells the truth (commit `fab6196dbd3c`)
-
-The full record of every change, with its build, system and source tree, is in the log.

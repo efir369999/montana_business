@@ -3,6 +3,18 @@
 The binary is attached to the releases of this repository; on iPhone, iPad and Mac MT Business installs through
 TestFlight. Each row names the folder that holds the source and the commit of the project's history that folder is.
 
+## Sources
+
+Each folder of this repository is the tree of one commit of the project's history, staged as it is built. The publisher writes this table in the same commit as the folder it names; the message of that commit names the source commit in full.
+
+<!-- sources:start -->
+| Folder | Build | Source commit | Staged |
+|---|---|---|---|
+| `apps/business/android` | 39 | `f45fc3b2639e` | 2026-10-10 11:53 UTC |
+| `apps/business/ios` | 77 | `e9a8f8905954` | 2026-10-10 11:53 UTC |
+| `core` | core line | `449a706c2752` | 2026-10-10 11:53 UTC |
+<!-- sources:end -->
+
 ## 2026-10-08: MT Business 1.0 (68)
 
 | File | Application | Version | SHA-256 | Source |
