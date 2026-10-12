@@ -11,7 +11,7 @@ Each folder of this repository is the tree of one commit of the project's histor
 | Folder | Build | Source commit | Folder tree | Staged |
 |---|---|---|---|---|
 | `apps/business/android` | 39 | `f45fc3b2639e` | `3480d33a098f47723d9cebaa4d2e58bf9891ef21` | 2026-10-10 11:53 UTC |
-| `apps/business/ios` | 84 | `39f2d2e5f67b` | `a158943fdb2889975e7794244976709496a7c4a5` | 2026-10-12 14:43 UTC |
+| `apps/business/ios` | 85 | `6581e57892d9` | `014c88e0e383708cb3ca87017fc55eb6d2191650` | 2026-10-12 15:44 UTC |
 | `core` | core line | `449a706c2752` | `5e789a746e37281fbb492ba84de6357204736d7f` | 2026-10-10 11:53 UTC |
 <!-- sources:end -->
 

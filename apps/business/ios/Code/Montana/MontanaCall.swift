@@ -5733,7 +5733,7 @@ private struct MTCallTimeLine: View {
                 Text(LocalizedStringKey(statusText))
             }
         }
-        .modifier(MTCallTimeSaid(shows: model.talkSince == nil ? statusText : "clock"))
+        .modifier(MTCallSaid(event: "call_time", kv: "shows=" + (model.talkSince == nil ? (statusText.isEmpty ? "-" : statusText) : "clock")))
         .font(.system(size: 17, weight: .medium)).monospacedDigit().foregroundColor(.white.opacity(0.85))
         .lineLimit(1).fixedSize()
         .shadow(color: .black.opacity(0.5), radius: 3)
@@ -5742,13 +5742,26 @@ private struct MTCallTimeLine: View {
     }
 }
 
-/// WHAT THE CALL'S TIME SHOWS IS SAID TO THE DIARY when it changes (12.10.2026, No.66: «the seconds do not run» stood unprovable -- no
-/// line said whether the screen showed the clock or a stage's word).
-private struct MTCallTimeSaid: ViewModifier {
-    let shows: String
+/// WHAT A FACE OF THE CALL SHOWS IS SAID TO THE DIARY when it changes (12.10.2026, No.66: «the seconds do not run» stood unprovable -- no
+/// line said whether the screen showed the clock or a stage's word, nor whether the screen was drawn again at all).
+private struct MTCallSaid: ViewModifier {
+    let event: String
+    let kv: String
     func body(content: Content) -> some View {
-        content.onChange(of: shows, initial: true) { _, s in MontanaP2PTrace.markChanged("call_time", "shows=" + (s.isEmpty ? "-" : s)) }
+        content.onChange(of: kv, initial: true) { _, s in MontanaP2PTrace.markChanged(event, s) }
     }
+}
+
+/// THE CALL'S FULL SCREEN READS THE MODEL ITSELF (12.10.2026, No.66, the author's word 15:4x MSK: «the seconds of the talk do not run --
+/// not fixed, it was on T1 in the morning too»). T1's outgoing voice calls at 10:34:36Z (2193) and 14:22:29Z (2195): the line said
+/// «Calling…» once and nothing after while the peer rang, the call connected and the clock's moment was set (call_time), and the speaker
+/// plate sent «to phone» at each of four presses over a route the model held dark from 14:22:29.950 -- the screen's own body was drawn
+/// once and not again. The faces that watch the model themselves live through it (MTCallMini, 23.09), so the full screen is drawn by a
+/// face of that kind: whatever holds the screen's owner still, every change of the call draws it again.
+private struct MTCallLive<Face: View>: View {
+    @ObservedObject var model: CallUIModel
+    let face: (CallUIModel) -> Face
+    var body: some View { face(model) }
 }
 
 /// A RUNNING LINE, AND ONLY WHEN IT MUST (the author's word 23.09: «if the name is longer — a running line, several
@@ -6957,8 +6970,10 @@ struct CallOverlayView: View {
             if model.state == "idle" { EmptyView() }
             else if model.state == "incoming" { incomingScreen }   // in-app ring (window shows it only when the app is active)
             else if model.minimized { minimizedPill }
-            else { fullScreen }
+            else { MTCallLive(model: model) { _ in fullScreen } }
         }
+        // Whether the screen's owner is drawn again is said too (MTCallLive): the next frozen screen names its holder.
+        .modifier(MTCallSaid(event: "call_root", kv: "state=\(model.state) ring=\(model.peerRinging ? 1 : 0) lit=\(model.route.lit ? 1 : 0)"))
         // THE CAMERA REFUSAL IS SAID TO THE FACE (the author's word 20.09): the system alert with
         // the system road to Settings (UIApplication.openSettingsURLString). iOS restarts the app
         // when the switch is flipped, so the call is placed again after it.
@@ -7243,7 +7258,7 @@ struct CallOverlayView: View {
                         }
                     }
                     .font(.title3).monospacedDigit().foregroundColor(.white.opacity(0.6))
-                    .modifier(MTCallTimeSaid(shows: model.talkSince == nil ? statusText : "clock"))
+                    .modifier(MTCallSaid(event: "call_time", kv: "shows=" + (model.talkSince == nil ? (statusText.isEmpty ? "-" : statusText) : "clock")))
                     Text(MontanaCall.shared.callerName(model.peer ?? ""))
                         .font(.system(size: landscape ? 28 : 40, weight: .bold)).foregroundColor(.white)
                         .lineLimit(1).minimumScaleFactor(0.6)
