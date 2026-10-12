@@ -34,6 +34,9 @@ struct MontanaPeerInfoScreen: View {
     @State private var aboutTick = 0                 // their bio or link arrived (24.09): the face's lines are asked again
     @State private var wallSheet: MTBoardSheet? = nil   // what the wall shows over the page (MTBoardPresenting, 25.09)
     @State private var wallPage: MTBoardRoute? = nil    // a writer's page, opened from the wall
+    @State private var explorer: MTExplorerLink? = nil   // a transfer's record in the Explorer inside the app (the transactions' tab)
+    @State private var coinMove: MTCoinMoveRoute? = nil  // a coin letter's transaction page (the transactions' tab)
+    @ObservedObject private var coinHistory = MTCoinHistory.shared   // the transfers with this person, from the one fold of the coins
     @StateObject private var face = MTFaceDock()   // the face starts at its circle and opens by a press -- the owner's rule for every page (24.09)
     @Environment(\.dismiss) private var dismiss
     private var letterCount: Int { (store.messages[chat.name]?.count ?? 0) + (chat.convId.flatMap { store.messages[$0]?.count } ?? 0) }
@@ -238,6 +241,8 @@ struct MontanaPeerInfoScreen: View {
         .modifier(MTGroupPageAsks(chat: chat, confirmLeave: $confirmLeave, removingSeat: $removingSeat, addingPeople: $addingPeople,
                                   confirmDissolve: $confirmDissolve, onGone: { dismiss(); ui.closeChat() }))
         .sheet(item: $roomAsk) { k in MTRoomInviteSheet(chat: chat.name, kind: k, video: roomAskVideo, opening: true) }
+        .sheet(item: $explorer) { link in MTExplorerSheet(url: link.url).ignoresSafeArea() }
+        .navigationDestination(item: $coinMove) { r in MTCoinMovePage(route: r, peer: data.title) }
     }
 
     private func openVideo(_ f: String, _ data: MTPeerInfoData) { VideoPresenter.present(f) }
@@ -640,6 +645,7 @@ struct MontanaPeerInfoScreen: View {
             // THE LOOK ASKS (the author's word 25.09: «entering the page must show the wall to everyone, at once»): the page asks
             // for the person's wall as it opens — the held page is drawn at once, the owner's fresh one takes its place (MTBoard.look).
             .onAppear { if data.kind == .person { MTBoard.shared.look(data.conv) } }
+            .onChange(of: state.tab) { _, t in if t == .transactions { coinHistory.warm() } }   // the coins' fold, once, at the tab's opening
 
         let items = data.pane(state.tab)
         // THE WALL (the author's word 24.09): a person's page shows their wall; Saved Messages is my own page, so its
@@ -648,6 +654,8 @@ struct MontanaPeerInfoScreen: View {
             // THE WALL'S POSTS ARE THE LIST'S OWN ROWS (the critic 25.09, the author's screenshot: a hole between the tabs and
             // «Write on the wall»): one cell per post, each measured by itself; the list's margin is the wall's edge (24.09).
             MTBoardRows(owner: ChatStore.isLocalRoom(chat.name) ? nil : data.conv, edge: 0, sheet: $wallSheet, page: $wallPage)
+        } else if state.tab == .transactions {
+            transactions(data)
         } else if items.isEmpty {
             VStack(spacing: 10) {
                 Image(systemName: state.tab.icon)
@@ -663,7 +671,7 @@ struct MontanaPeerInfoScreen: View {
             ForEach(byDay(items)) { sec in
                 dayHeader(sec.id)
                 switch state.tab {
-                case .wall: EmptyView()
+                case .wall, .transactions: EmptyView()
                 case .media: grid(sec.items, data) { $0.imageFile }
                 case .video: videoGrid(sec.items, data)
                 case .files: fileList(sec.items)
@@ -673,6 +681,65 @@ struct MontanaPeerInfoScreen: View {
                 }
             }
         }
+    }
+
+    /// THE TRANSFERS WITH THIS PERSON (the author's word 12.10.2026 15:2x MSK: «on the correspondent's page add after the wall a section of
+    /// transactions, to see only what was sent to and received from the correspondent»): the coins sent to them and received from them,
+    /// newest first, cut by day as every pane is, each on the bar's own glass; a transfer opens its record in the Explorer inside the app,
+    /// a coin letter its transaction's page. Read from the one fold of the coins (MTCoinHistory), never from the book here.
+    @ViewBuilder private func transactions(_ data: MTPeerInfoData) -> some View {
+        let peers = Set([data.conv, chat.name] + MTSamePair.folded(into: data.conv)).subtracting([""])
+        let lines = coinHistory.with(peers)
+        if coinHistory.fold == nil {
+            ProgressView().frame(maxWidth: .infinity).padding(.vertical, 36)
+        } else if lines.isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: state.tab.icon)
+                    .font(.system(size: 42)).foregroundColor(.gray)
+                Text(state.tab.emptyText).foregroundColor(.gray).font(.subheadline)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 36)
+        } else {
+            ForEach(transferDays(lines)) { sec in
+                dayHeader(sec.id)
+                VStack(spacing: 8) {
+                    ForEach(sec.lines) { l in
+                        Button { openTransfer(l) } label: {
+                            glassRow(glyph: l.glyph) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    // USER-DATA: the move's kind -- coins sent or received -- in the person's language
+                                    Text(verbatim: l.category).foregroundColor(.white).lineLimit(1)
+                                    // USER-DATA: the move's moment on this phone's clock
+                                    Text(verbatim: Date(timeIntervalSince1970: l.at).formatted(date: .omitted, time: .shortened))
+                                        .font(.caption).foregroundColor(.gray)
+                                }
+                                Spacer(minLength: 0)
+                                // USER-DATA: the move's coins, signed
+                                Text(verbatim: (0 < l.signed ? "+" : "") + MTCoinText.count(l.signed)).font(.body.monospacedDigit())
+                                    .foregroundColor(0 < l.signed ? .green : .white)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.top, 8)   // the list's margin is the rows' edge, as the wall's (24.09)
+            }
+        }
+    }
+    struct MTTransferDay: Identifiable { let id: String; let lines: [MTCoinHistory.Line] }
+    private func transferDays(_ lines: [MTCoinHistory.Line]) -> [MTTransferDay] {
+        var out: [MTTransferDay] = []
+        for l in lines {
+            let d = MTDayLabel.of(l.at)
+            if let last = out.last, last.id == d { out[out.count - 1] = MTTransferDay(id: d, lines: last.lines + [l]) }
+            else { out.append(MTTransferDay(id: d, lines: [l])) }
+        }
+        return out
+    }
+    private func openTransfer(_ l: MTCoinHistory.Line) {
+        if let tx = l.tx, let url = URL(string: MTCoinTx.link + tx) { explorer = MTExplorerLink(url: url) }
+        else { coinMove = MTCoinMoveRoute(ref: l.ref, mine: l.signed < 0) }
     }
 
     /// THE PROFILE WEARS THE PLAYER'S DRESS (the author's word 22.09): a file, a link, a track and a

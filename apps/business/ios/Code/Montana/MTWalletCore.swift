@@ -1522,6 +1522,10 @@ enum MTTimeChain {
 
     static func source(of e: MTCoinEntry) -> String { source(ref: e.ref, kind: e.k, peer: e.peer) }
     static func source(ref r: String, kind: MTCoinEntry.Kind, peer: String? = nil) -> String {
+        source(ref: r, kind: kind, peer: peer) { p in MTGroup.shared.kind(p) == .channel }
+    }
+    /// The same reading with the channels said by the caller: a fold off the screen's thread asks no live group (MTCoinHistory).
+    static func source(ref r: String, kind: MTCoinEntry.Kind, peer: String?, channel: (String) -> Bool) -> String {
         if MTChessCoins.owns(r) { return "chess" }   // the moves, the wins and losses before the pot, the pot and its stakes (06.10)
         if r.hasPrefix(MTPantheon.refPrefix) { return "pantheon" }
         if r.hasPrefix(MTVPNWallMint.refPrefix) { return "vpnwall" }
@@ -1534,7 +1538,7 @@ enum MTTimeChain {
             // A GROUP'S AND A CHANNEL'S COINS STAND IN THEIR OWN CHAINS (the author's words 06.10.2026 11:5x-12:0x MSK: «their own
             // TimeChain and their own app»): the letter's conversation names its chain.
             guard let p = peer, MTGroup.isKey(p) else { return "chats" }
-            return MTGroup.shared.kind(p) == .channel ? "channels" : "groups"
+            return channel(p) ? "channels" : "groups"
         case .receive: return "received"
         case .spend: return "spent"
         case .send: return "sent"
