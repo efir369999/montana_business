@@ -49,6 +49,12 @@ enum MTBizPlace {
         guard let u = url(name) else { return false }
         return (try? d.write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil
     }
+    /// THE ADDRESS'S CONFIRMATION LEAVES (the author's word 10.10.2026 16:2x MSK: «the button sign in by mail ... eradicate it wholly,
+    /// everywhere»): no road reads it any more, so the file a build before kept for the person seated goes at launch.
+    static func forgetMailConfirmation() {
+        guard let u = url("email.mtbe"), FileManager.default.fileExists(atPath: u.path) else { return }   // NOT-UI: a file name
+        try? FileManager.default.removeItem(at: u)
+    }
     static func names() -> [String] {
         guard let dir else { return [] }
         return (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
@@ -215,6 +221,9 @@ final class MTBusiness: ObservableObject, @unchecked Sendable {
     private var redrawing = false   // a redraw on its way folds the ones asked meanwhile
     private var settling = false
     private var settleAgain = false
+    /// THE TRANSFERS A SCAN HEARD (MTCoinTx.scan, article 0), on the main thread: a pay's coins ride a transfer record whose nonce
+    /// is its coin_ref's (MTCoinTx.payNonce) -- the pair and the nonce name the pay, the record's id the transfer that carried it.
+    private var heardTx: [String: (id: String, own: Bool, coins: Int)] = [:]
 
     // -- the Business's queue and what it alone holds ----------------------------------------------
     private let q = DispatchQueue(label: "montana.business", qos: .userInitiated)
@@ -314,7 +323,7 @@ final class MTBusiness: ObservableObject, @unchecked Sendable {
             self.drawn = [:]
             self.loadQ()
             let p = self.picture()
-            DispatchQueue.main.async { MainActor.assumeIsolated { self.apply(p) } }
+            DispatchQueue.main.async { MainActor.assumeIsolated { self.heardTx = [:]; self.apply(p) } }   // the transfers heard were the person's who left
         }
     }
     private func loadQ() {
@@ -1110,14 +1119,25 @@ final class MTBusiness: ObservableObject, @unchecked Sendable {
         return await run { self.local.paid[ref] != nil } ? .done : .refused
     }
 
-    /// Coins to a colleague: the Messenger's own coin letter in the pair's chat (MTCoinSend.transfer).
+    /// Coins to a colleague: the Messenger's own transfer to the pair -- a record on the nodes, a letter in the chat that tells
+    /// (MTCoinSend.transfer, MTCoinTx).
     @MainActor
-    func give(_ coins: Int, to member: String) -> Verdict {
+    func give(_ coins: Int, to member: String) async -> Verdict {
         guard let store = ChatStore.live, let p = pipe(of: member) else { return .noRoad }
         let chat = Self.pairChat(p, store: store)
         guard MTCoinSend.canPay(chat, store: store) else { return .noRoad }
         guard 0 < coins, coins <= MTCoinBook.ledger.balance else { return .short }
-        return MTCoinSend.transfer(coins, to: chat, store: store) ? .done : .refused
+        return await MTCoinSend.transfer(coins, to: chat, store: store) ? .done : .refused
+    }
+
+    /// A transfer record of a pair, read on its chain's node and in the book: mine (laid by this device or another of the words)
+    /// or the correspondent's, credited. Each once a life; a new one asks the pays again.
+    @MainActor
+    func heardTransfer(conv: String, record r: MTCoinTx.Record, own: Bool) {
+        let key = conv + " " + MTCoinTx.hex(r.nonce)
+        guard heardTx[key] == nil else { return }
+        heardTx[key] = (r.id, own, r.coins)
+        Task { @MainActor in await self.settleNow() }
     }
 
     /// WHAT IS OWED LEAVES, WHAT CAME IS RECEIPTED (asked by anyone, never waited for): see settleNow.
@@ -1139,17 +1159,37 @@ final class MTBusiness: ObservableObject, @unchecked Sendable {
             guard let store = ChatStore.live else { return }
             let owed = await run { self.local.owed.filter { self.local.paid[$0.key] == nil } }
             var paid: [String: String] = [:]
+            if !owed.isEmpty { await MTCoinTx.scanBeforePay() }
             for (ref, o) in owed {
-                guard let p = pipe(of: o.member), Int(clamping: o.coins) <= MTCoinBook.ledger.balance,
-                      let mid = MTCoinSend.send(Int(clamping: o.coins), to: Self.pairChat(p, store: store), store: store, name: ref) else { continue }
-                paid[ref] = mid
-                MontanaP2PTrace.mark("biz_pay", "letter=\(String(mid.prefix(10)))")   // never the sum: the diary leaves the phone
+                // EITHER THE COINS LEFT OR NOT (article 0): a pay leaves as a transfer record under its own nonce. One already laid --
+                // a record that waited for its node's word, or another device of the words -- is the pay; one still waiting holds it.
+                guard let p = pipe(of: o.member), let nonce = MTCoinTx.payNonce(conv: p, ref: ref) else { continue }
+                if let h = heardTx[p + " " + MTCoinTx.hex(nonce)], h.own { paid[ref] = MTCoinTx.refPrefix + h.id; continue }
+                guard !MTCoinTx.waiting(nonce: nonce), Int(clamping: o.coins) <= MTCoinBook.ledger.balance,
+                      let id = await MTCoinSend.transferNamed(Int(clamping: o.coins), to: Self.pairChat(p, store: store), store: store, nonce: nonce) else { continue }
+                paid[ref] = MTCoinTx.refPrefix + id
+                MontanaP2PTrace.mark("biz_pay", "tx=\(String(id.prefix(10)))")   // never the sum: the diary leaves the phone
             }
             let book = MTLocalCoinLedger.shared.whole
             var credited = Set<String>()
             for p in Set(roads.values) {
                 for m in store.messages[p] ?? [] where !m.isFromMe {
                     if let r = m.coinLetter?.r, r.hasPrefix(Self.coinHead), book.received(m.mid) { credited.insert(r) }
+                }
+            }
+            // A pay carried by a transfer (builds from 81): the correspondent's record credited here, its nonce the pay's.
+            let heardFrom = heardTx.filter { h in !h.value.own }
+            if !heardFrom.isEmpty {
+                let convs = Set(heardFrom.keys.compactMap { k in k.split(separator: " ").first.map(String.init) })
+                let mine: [(ref: String, coins: UInt64)] = await run {
+                    self.drawn.values.flatMap { v in v.pay.filter { p in p.member == v.me.member && !p.confirmed }.map { p in (p.coin_ref, p.coins) } }
+                }
+                // The pay's nonce AND its whole sum: a colleague who knows the pay's name cannot receipt it with one coin.
+                for pay in mine {
+                    for c in convs {
+                        if let n = MTCoinTx.payNonce(conv: c, ref: pay.ref), let h = heardFrom[c + " " + MTCoinTx.hex(n)],
+                           UInt64(h.coins) == pay.coins { credited.insert(pay.ref) }
+                    }
                 }
             }
             await run {

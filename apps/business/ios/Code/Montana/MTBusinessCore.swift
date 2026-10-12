@@ -432,18 +432,6 @@ enum MTBizCore {
         return try? JSONDecoder().decode(Attest.self, from: js)
     }
 
-    /// What an address's confirmation says, once the same service key proves it: the address, the key it was given to, the
-    /// moment (MTBE, mt-business email.rs). Nil -- the confirmation is not the service's.
-    struct EmailAttest: Decodable { var email: String; var subject: String; var at_ms: UInt64 }
-    static func emailOpen(_ attest: Data) -> EmailAttest? {
-        let a = held(attest)
-        let got = answer(first: 512) { out, cap, len in
-            a.withUnsafeBufferPointer { ap in mt_biz_email_open(ap.baseAddress, attest.count, out, cap, len) }
-        }
-        guard case .success(let js) = got else { return nil }
-        return try? JSONDecoder().decode(EmailAttest.self, from: js)
-    }
-
     /// The member's lasting name: derived from the key they joined with, kept through a new key.
     static func memberId(_ pubkey: Data) -> String? {
         guard pubkey.count == keySize else { return nil }

@@ -15,10 +15,17 @@
 			</array>
 		</dict>
 	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>montana-business</string>
+		<string>montana-messenger</string>
+	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>MontanaDomain</key>
 	<string>$(MONTANA_DOMAIN)</string>
+	<key>MontanaNotifyRoad</key>
+	<string>$(MONTANA_NOTIFY_ROAD)</string>
 	<key>MontanaBizService</key>
 	<string>$(MONTANA_BIZ_SERVICE)</string>
 	<key>MontanaBizAppDoor</key>

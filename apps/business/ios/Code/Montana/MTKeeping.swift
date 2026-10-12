@@ -1241,7 +1241,7 @@ extension ChatStore {
             noteListState(conv, last: last)
             noteOrder(conv, at: Int(last.createdAt * 1000))
         }
-        Self.writeSnapshotNow(messages)
+        persist(messages, why: "given")
         return add.count
     }
 }
@@ -1296,7 +1296,7 @@ struct MTKeepingSection: View {
             case .calling(let have, let need) where need > 0:
                 Text("Parts in hand: \(have) of \(need)").foregroundColor(.secondary)
             case .calling:
-                Text("Asking the people you write to…").foregroundColor(.secondary)
+                Text("Restoring the identity chain").foregroundColor(.secondary)
             case .fetching(let f), .laying(let f):
                 ProgressView(value: f)
             case .done:

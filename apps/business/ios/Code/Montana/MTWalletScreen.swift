@@ -226,10 +226,22 @@ struct MTWalletPage: View {
                     if coinsShown { Text("Your name and coins are shown to everyone in the Montana top. Privacy settings turn it off.") }
                     else { Text("You are not in the Montana top. Privacy settings turn it on.") }
                 }
-                // EVERY ROAD OF THE COINS, ON THE PAGE ITSELF (the author's words 08.10.2026 02:2x MSK, «crystal clear»): not behind a button.
-                Section { MTCoinRules() } header: { Text("How coins come and go") }
+                // EVERY ROAD OF THE COINS STANDS BEHIND TOP UP (the author's word 11.10.2026 20:2x MSK: «take the canvas of the ways of
+                // minting off the coins' page onto the Top up button»): the page keeps the coin, the balance and its buttons; Top up opens
+                // the whole list (MTCoinTopUpSheet, MTCoinRules).
                 // THE TIMECHAINS (the author's word 04.10 00:25, MTTimeChain): each source's chain, its length, its head, its seal.
                 Section { MTTimeChainRows() } header: { Text("TimeChains") }
+                // THE EXPLORER (the author's word 11.10.2026 20:2x MSK: «on the TimeChain page an Explorer button to open and check a
+                // transaction ... everything professional in the TimeChain, for auditors»): the public page that reads a transfer's
+                // record from the nodes and verifies its signature with the core (Montana's Audit/COIN-TX-V1.md); every transfer link
+                // opens it. Business keeps its TimeChains on this page, so the Explorer stands right under them.
+                Section {
+                    Link(destination: MTCoinTx.explorer) {
+                        Label("Explorer", systemImage: "magnifyingglass").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+                    }
+                } footer: {
+                    Text("Every transfer is a record on the nodes signed by its sender's seed. The Explorer reads it from the nodes and checks its signature; a transfer's link in the Wallet chains opens it there.")
+                }
                 // THE WALL'S MINTING STANDS ON THE WALLET (the author's word 02.10 15:28): the rights the comment windows hold,
                 // beside the confirmed balance and never added into it -- only the core turns a right into a note.
                 Section {
@@ -381,6 +393,10 @@ struct MTWalletPage: View {
         // the bottom edge waits for a second stroke here, as a game asks of it.
         .defersSystemGestures(on: .bottom)
         .task { await refresh() }
+        // THE AUTO MINTING IS ON BY DEFAULT (the author's word 09.10.2026 20:1x MSK: "in every app the auto minting automatically,
+        // by default"): the page standing open mints by the second without a pull or a hold; leaving the page or locking the
+        // screen still ends it (MTWalletPull), and the return to the page or to the app begins it again.
+        .onAppear { if !pantheon.lit { autoMint.fire() } }
         // THE TOP IS A LIVE SET FROM THE NODES (the author's words 04.10.2026 03:03 and 04:19 MSK: «a live set as by a web socket, the
         // update instant from the nodes»): while the wallet stands open the pairs' last words are asked of the nodes every three
         // seconds in one question -- their balances ride them (E2E.coinTail); a pair in the app hands its own over at once.
@@ -388,6 +404,7 @@ struct MTWalletPage: View {
             UserDefaults.standard.set(true, forKey: MTCoinShow.toldKey)
             await MTTimeChainTip.shared.gather(why: "wallet")   // the other devices' tips in one round trip (04.10 16:34)
             await MTCoinVault.shared.gather(why: "wallet")   // the seed's book first: the row tells what the seed holds (04.10)
+            await MTCoinTx.scan(why: "wallet")   // the transfers' records of every pipe, whatever build sent them (MTCoinTx)
             MTTopNet.shared.put()
             var turn = 0
             while !Task.isCancelled {
@@ -405,7 +422,7 @@ struct MTWalletPage: View {
         .onChange(of: phase) { _, new in
             // THE LOCK ENDS IT, NOT A GLANCE (the author's word 05.10.2026 00:53 MSK): the screen locked or the app left goes to the
             // background; a banner or the Control Center pulled down only makes the scene inactive, and the minting goes on.
-            if new == .active { Task { await refresh() } } else if new == .background { autoMint.stop(why: "background") }
+            if new == .active { Task { await refresh() }; if !pantheon.lit { autoMint.fire() } } else if new == .background { autoMint.stop(why: "background") }
         }
         .onDisappear { autoMint.stop(why: "page"); pantheon.released() }
     }
@@ -1142,23 +1159,25 @@ struct MTTimeChainPage: View {
                 }
             }
             ForEach(links.reversed(), id: \.n) { l in
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack {
-                        // USER-DATA: the link's number in its chain
-                        Text(verbatim: "#" + String(l.n)).font(.subheadline.monospacedDigit().weight(.semibold))
-                        Spacer()
-                        // USER-DATA: the coins the link moved, signed by its way; a link of the wall's posts moves none
-                        if 0 < l.c {
-                            Text(verbatim: (["earn", "receive", "keep"].contains(l.k) ? "+" : "−") + MTCoinText.count(l.c)).font(.body.monospacedDigit())
+                MTTimeChainLinkRow(ref: l.ref) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            // USER-DATA: the link's number in its chain
+                            Text(verbatim: "#" + String(l.n)).font(.subheadline.monospacedDigit().weight(.semibold))
+                            Spacer()
+                            // USER-DATA: the coins the link moved, signed by its way; a link of the wall's posts moves none
+                            if 0 < l.c {
+                                Text(verbatim: (["earn", "receive", "keep"].contains(l.k) ? "+" : "−") + MTCoinText.count(l.c)).font(.body.monospacedDigit())
+                            }
                         }
+                        // USER-DATA: the link's moment, on this phone's clock
+                        Text(verbatim: Date(timeIntervalSince1970: Double(l.at) / 1000).formatted(date: .abbreviated, time: .standard))
+                            .font(.caption).foregroundStyle(.secondary)
+                        // USER-DATA: the link's seal and the seal it stands on
+                        Text(verbatim: String(l.hash.prefix(16)) + " ← " + String(l.prev.prefix(16))).font(.caption2.monospaced()).foregroundStyle(.secondary)
+                        // USER-DATA: the move's own name
+                        Text(verbatim: l.ref).font(.caption2.monospaced()).lineLimit(1).truncationMode(.middle).foregroundStyle(.tertiary)
                     }
-                    // USER-DATA: the link's moment, on this phone's clock
-                    Text(verbatim: Date(timeIntervalSince1970: Double(l.at) / 1000).formatted(date: .abbreviated, time: .standard))
-                        .font(.caption).foregroundStyle(.secondary)
-                    // USER-DATA: the link's seal and the seal it stands on
-                    Text(verbatim: String(l.hash.prefix(16)) + " ← " + String(l.prev.prefix(16))).font(.caption2.monospaced()).foregroundStyle(.secondary)
-                    // USER-DATA: the move's own name
-                    Text(verbatim: l.ref).font(.caption2.monospaced()).lineLimit(1).truncationMode(.middle).foregroundStyle(.tertiary)
                 }
             }
         }
@@ -1167,6 +1186,32 @@ struct MTTimeChainPage: View {
         .task {
             MTTimeChain.read(source) { links = $0 }
             MTTimeChain.head(source) { head = $0 }
+        }
+    }
+}
+
+/// A TRANSFER'S LINK OPENS ITS RECORD (the author's word 11.10.2026 20:2x MSK: «on any transaction a link that confirms the sending,
+/// so I can send it too»): a link whose move is a transfer (MTCoinTx, "tx:" + the record's name) is the whole row's road to the
+/// Explorer, and its menu copies or shares the confirmation link; every other link stands as it was.
+struct MTTimeChainLinkRow<Content: View>: View {
+    let ref: String
+    @ViewBuilder var content: () -> Content
+    private var url: URL? {
+        guard ref.hasPrefix(MTCoinTx.refPrefix) else { return nil }
+        let id = String(ref.dropFirst(MTCoinTx.refPrefix.count))
+        return id.count == 64 ? URL(string: MTCoinTx.link + id) : nil
+    }
+    var body: some View {
+        if let url {
+            Link(destination: url) { content().frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle()) }
+                .foregroundStyle(.primary)
+                .contextMenu {
+                    Link(destination: url) { Label("Open in Explorer", systemImage: "magnifyingglass") }
+                    Button { UIPasteboard.general.string = url.absoluteString } label: { Label("Copy confirmation link", systemImage: "doc.on.doc") }
+                    Button { MTShare.present([url]) } label: { Label("Share confirmation link", systemImage: "square.and.arrow.up") }
+                }
+        } else {
+            content()
         }
     }
 }
@@ -1180,8 +1225,8 @@ struct MTCoinRules: View {
         Label("Tap the coin: every tap mints coins at your level, up to 13 taps a second, and all coins of one second stop at 13 (26 while music plays). The fire burns while you tap, a minute at most, then rests a minute; three seconds without a tap put it out.", systemImage: "flame")
         Label("Pull this page down past the coin, or hold the coin: coins come by themselves every second at your level while this page stays open. Leaving the page or locking the screen stops it.", systemImage: "arrow.down.circle")
         Label("Your level is how many of the amounts 3, 31, 314 … (the digits of π) your balance reaches, at least 1 and at most 13. While your music plays, every amount at your level doubles. All coins made in one second stop at 13 together, 26 while music plays; Money Flow letters and a chess game's pot are outside this limit.", systemImage: "chart.bar")
-        Label("Money Flow on in a chat: every letter in it, yours and your correspondent's, and every second of a call bring you coins at your level.", systemImage: "bubble.left.and.bubble.right")
-        Label("Ordinary chat: each of your messages and each second of a call burn one coin. With no coins, they go all the same.", systemImage: "bubble.left")
+        Label("Chats: every letter, yours and your correspondent's, brings you coins at your level.", systemImage: "bubble.left.and.bubble.right")
+        Label("Calls: every second of a call brings each of its people coins at their own level.", systemImage: "phone")
         Label("A person sends you coins in your chat", systemImage: "person.2")
         Label("Comments: a comment costs its writer one coin, which goes to the owner of the wall; a comment in a channel costs nothing. Of every five comment coins on a post, the owner's book burns four and gives the fifth to the post's writer, keeping it when the post is the owner's own.", systemImage: "text.bubble")
         Label("Groups and channels: every letter longer than 13 characters brings you coins at your level.", systemImage: "person.3")
@@ -1251,15 +1296,27 @@ struct MTCoinSendSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var book = MTLocalCoinLedger.shared
     @ObservedObject private var board = MTCoinBoard.shared
+    @ObservedObject private var seats = MTSeats.shared   // the persons waiting on this phone's shelf: my other accounts
+    /// EVERY PAIR OF THE CHATS TAB, IN ITS ORDER, EVERY ONE OPEN (the author's words 11.10.2026 17:5x MSK: «put full order in the list
+    /// of chats for sending the time coins -- not all chats show on the send page»; 19:5x: «the person is the seed and everything is in
+    /// it»): a person is their seed and their wallet is in it, so no row stands dimmed «no wallet yet» (MTCoinSend.canPay).
     @State private var chats: [Chat] = []
     @State private var picked: Set<String> = []
     /// EACH NAME ITS OWN COINS (the author's word 06.10.2026 17:3x MSK: «the field of the coins entered beside the name»): what is
     /// typed beside a chat is what that chat gets; a chat picked with nothing typed takes the box of π last chosen.
     @State private var amounts: [String: String] = [:]
     @State private var chosen = 1
-    @State private var refused = false
     @State private var going: [String: Bool] = [:]   // the coins in flight per chat: false while they go, true when the letter stands
-    @State private var levelAsked = false
+    /// THE ONE QUESTION OF THE PAGE (the author's word 11.10.2026 17:5x MSK: «the button Level the top 13 does not work»): three alerts
+    /// stood chained on the one list, the levelling's question in the middle of them; one alert now, its words by the case.
+    private enum Ask: Equatable {
+        case short, level, noBalances, link
+    }
+    @State private var ask: Ask?
+    /// THE SEALING RULE (the financial layer's document, «Montana Financial Layer and Anonymous Owner» 1.0.0, section 5.3; the chairman's
+    /// task 12.10.2026, No.65): a transfer between two accounts of one owner links them publicly and forever, so it is never sent as an
+    /// ordinary act -- the person reads what it does and agrees, once a sheet.
+    @State private var linkAgreed = false
     @FocusState private var typing: String?
     private func coins(_ name: String) -> Int { Int(amounts[name] ?? "") ?? 0 }
     private var total: Int { picked.reduce(0) { sum, name in sum + coins(name) } }
@@ -1288,15 +1345,58 @@ struct MTCoinSendSheet: View {
                             }
                         }
                     }
-                    Button { levelAsked = true } label: { Label("Level the top 13", systemImage: "chart.bar.xaxis.ascending") }
-                        .frame(minHeight: 44)
-                        .disabled(topThirteen.count < 2)
+                    // A BUTTON IS NEVER DEAD (the author's word 10.10.2026 15:3x MSK: «in the wallet the button Level the top 13 does
+                    // not work»): it stood disabled while fewer than two contacts had told a balance -- on T1 none ever had, so it
+                    // never answered a press. Now a press always answers: the levelling's question, or the platform's alert saying
+                    // that no contact shows a balance and how one comes.
+                    Button {
+                        MontanaP2PTrace.mark("coin_level_ask", "told=" + String(topThirteen.count) + " pairs=" + String(chats.count))
+                        ask = topThirteen.isEmpty ? .noBalances : .level
+                    } label: {
+                        Label("Level the top 13", systemImage: "chart.bar.xaxis.ascending")
+                    }
+                    .frame(minHeight: 44)
                     if !picked.isEmpty {
                         // USER-DATA: the coins of every picked chat together, a number
                         LabeledContent { Text(verbatim: MTCoinText.count(total)).monospacedDigit() } label: { Text("Total") }
                     }
                 }
                 .listRowBackground(MTGlassRowPlate())
+                // TO ONESELF ON ANOTHER ACCOUNT (the author's word 11.10.2026 17:13 MSK, No.62: «with several accounts, an option in a
+                // transfer to send to oneself on another account»): every person waiting on this phone's shelf, by the face and the
+                // name the drawer shows; the coins ride the pipe the two persons share, born on this phone when they have none
+                // (MTSeats.pairWithShelf), and the shelf files them in that person's own book.
+                if !seats.parked.isEmpty {
+                    Section {
+                        ForEach(seats.parked) { s in
+                            let key = Self.seatKey(s.id)
+                            HStack(spacing: 12) {
+                                Button { toggle(key) } label: {
+                                    HStack(spacing: 12) {
+                                        AvatarCircle(photoURL: nil, color: .black, initial: s.glyph, size: 40, image: MTSeats.face(s.id))
+                                        Text(verbatim: MontanaAvatar.spokenName(s.name.isEmpty ? "Montana" : s.name))   // USER-DATA: the person's own name
+                                            .foregroundColor(.white).lineLimit(1).truncationMode(.tail)
+                                        Spacer(minLength: 0)
+                                    }
+                                    .frame(minHeight: 44)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                TextField("0", text: field(key))
+                                    .keyboardType(.numberPad)
+                                    .multilineTextAlignment(.trailing)
+                                    .font(.body.monospacedDigit())
+                                    .textFieldStyle(.roundedBorder)
+                                    .focused($typing, equals: key)
+                                    .frame(width: 96, height: 44)
+                                Button { toggle(key) } label: { MTPickMark(picked: picked.contains(key), going: going[key]) }
+                                    .buttonStyle(.plain)
+                                    .frame(minWidth: 44, minHeight: 44)
+                            }
+                            .listRowBackground(MTGlassRowPlate())
+                        }
+                    } header: { Text("My other accounts") } footer: { Text("A transfer to your own account links the two accounts publicly forever.") }
+                }
                 Section {
                     if chats.isEmpty {
                         Text("No chats yet").foregroundStyle(.secondary).listRowBackground(MTGlassRowPlate())
@@ -1347,19 +1447,41 @@ struct MTCoinSendSheet: View {
                         .accessibilityLabel(Text("Send"))
                 }
             }
-            .alert("Not enough coins", isPresented: $refused) {
-                Button("OK", role: .cancel) {}
-            } message: { Text("Your coin balance is lower than this.") }
             // LEVELLING ASKS FIRST (the author's word 07.10.2026 18:3x MSK: Level the top 13 needs a mandatory confirmation with a
             // description of what happens next): who receives, how much in all and to what level, said before a field changes.
-            .alert("Level the top 13?", isPresented: $levelAsked) {
-                if !levelPlan().gifts.isEmpty { Button("Level them") { level() } }
-                Button("Cancel", role: .cancel) {}
-            } message: { levelWords }
+            .alert(askTitle, isPresented: Binding(get: { ask != nil }, set: { shown in if !shown { ask = nil } }), presenting: ask) { a in
+                if a == .level {
+                    if !levelPlan().gifts.isEmpty { Button("Level them") { level() } }
+                    Button("Cancel", role: .cancel) {}
+                } else if a == .link {
+                    Button("Send and link") { linkAgreed = true; send() }
+                    Button("Cancel", role: .cancel) {}
+                } else {
+                    Button("OK", role: .cancel) {}
+                }
+            } message: { a in
+                switch a {
+                case .short: Text("Your coin balance is lower than this.")
+                case .level: levelWords
+                case .noBalances: Text("None of your contacts shows their coins yet. A contact's balance appears here once they turn on Show my coins in their wallet.")
+                case .link: Text("A transfer between two of your accounts links them publicly and forever: anyone who reads the TimeChain sees that both belong to one owner. Coins you send to other people never link your accounts.")
+                }
+            }
         }
         .onAppear {
             guard let store = ChatStore.live else { return }
-            chats = store.listChats().filter { c in MTCoinSend.canPay(c, store: store) }
+            // Every pair of the chats tab in its order: no group, no room of the phone's own, no blocked or closed person, no device
+            // of my own words, one row a person (MTSamePair). A row born before the conversation took its id is named by its pipe.
+            let pairs: [Chat] = store.listChats().compactMap { c in
+                let conv = c.convId ?? c.name
+                guard !c.isGroup, !MTGroup.isKey(c.name), !ChatStore.isLocalRoom(c.name), MontanaConv.holds(conv), !store.refuses(conv),
+                      !store.closedChats.contains(conv), !MTOwnWords.mine(conv), MTSamePair.root(c.name) == c.name else { return nil }
+                var row = c
+                if row.convId == nil { row.convId = conv }
+                return row
+            }
+            chats = pairs
+            MontanaP2PTrace.mark("coin_send_page", "pairs=" + String(pairs.count))
         }
     }
     /// The coins typed beside a chat: digits alone; coins typed pick the chat, a field emptied lets it go.
@@ -1383,6 +1505,16 @@ struct MTCoinSendSheet: View {
             picked.insert(name)
             if coins(name) == 0 { amounts[name] = String(chosen) }
             typing = name
+        }
+    }
+    /// The question's title, by its case.
+    private var askTitle: Text {
+        switch ask {
+        case .short: return Text("Not enough coins")
+        case .level: return Text("Level the top 13?")
+        case .noBalances: return Text("No balances to level")
+        case .link: return Text("Link your accounts forever?")
+        case nil: return Text(verbatim: "")   // USER-DATA: no question stands, no title is read
         }
     }
     /// The thirteen chats here whose people told the most coins (MTCoinBoard), the most first.
@@ -1428,20 +1560,40 @@ struct MTCoinSendSheet: View {
         }
         MontanaP2PTrace.mark("coin_level", "top=\(topThirteen.count) level=\(plan.level) total=\(plan.total) balance=\(book.balance)")
     }
+    /// A shelf person's key among the picks: never a chat's name.
+    private static func seatKey(_ id: String) -> String { "seat:" + id }   // NOT-UI: the pick's key
     private func send() {
         guard let store = ChatStore.live else { return }
         let to = chats.filter { c in picked.contains(c.name) && 0 < coins(c.name) }
-        guard !to.isEmpty, total <= MTCoinBook.ledger.balance else { refused = true; return }
+        let toSeats = seats.parked.filter { s in picked.contains(Self.seatKey(s.id)) && 0 < coins(Self.seatKey(s.id)) }
+        guard !to.isEmpty || !toSeats.isEmpty, total <= MTCoinBook.ledger.balance else { ask = .short; return }
+        if !toSeats.isEmpty, !linkAgreed { ask = .link; return }
         let each = Dictionary(uniqueKeysWithValues: to.map { c in (c.name, coins(c.name)) })
         for c in to { going[c.name] = false }
+        for s in toSeats { going[Self.seatKey(s.id)] = false }
         Task { @MainActor in
             var went: [Chat] = []
+            for s in toSeats {
+                let key = Self.seatKey(s.id)
+                let sum = coins(key)
+                await Task.yield()
+                let conv = await Task.detached(priority: .userInitiated) { MTSeats.pairWithShelf(s.id) }.value
+                guard let conv else { going[key] = nil; continue }
+                store.setPeerName(ref: conv, name: s.name, at: Date().timeIntervalSince1970, source: "seat")
+                let chat = store.listChats().first { c in (c.convId ?? c.name) == conv } ?? Chat(name: conv, lastMessage: "", time: "", unread: 0, convId: conv)
+                if let tx = await MTCoinSend.transferId(sum, to: chat, store: store) {
+                    // the record left: the receiving person takes it in the same step, never by a letter on its way (point 0)
+                    let seat = s.id
+                    _ = await Task.detached(priority: .userInitiated) { await MTSeats.landTransfer(seat, coins: sum, record: tx, conv: conv) }.value
+                    went.append(chat); going[key] = true
+                } else { going[key] = nil }
+            }
             for c in to {
                 await Task.yield()   // each ring turns on the screen before its coins go
-                if MTCoinSend.transfer(each[c.name] ?? 0, to: c, store: store) { went.append(c); going[c.name] = true } else { going[c.name] = nil }
+                if await MTCoinSend.transfer(each[c.name] ?? 0, to: c, store: store) { went.append(c); going[c.name] = true } else { going[c.name] = nil }
             }
-            MontanaP2PTrace.mark("coin_send_many", "chats=\(to.count) total=\(each.values.reduce(0, +)) went=\(went.count)")
-            guard !went.isEmpty else { going = [:]; refused = true; return }
+            MontanaP2PTrace.mark("coin_send_many", "chats=\(to.count) own=\(toSeats.count) total=\(total) went=\(went.count)")
+            guard !went.isEmpty else { going = [:]; ask = .short; return }
             // THE PAGE LEAVES BY ITSELF (the author's word 05.10.2026 18:2x MSK: «the send page must close and carry into our app to go
             // on; now it hangs on the send page and asks an extra action -- constitution 0»): the closed rings stand a breath, then
             // one recipient's chat opens at once (the outside road closes the sheet and the wallet in one move), many close the page.

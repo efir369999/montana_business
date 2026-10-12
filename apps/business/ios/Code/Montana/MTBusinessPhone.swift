@@ -42,11 +42,10 @@ enum MTBizService {
     /// The roads, and beside them the account's door (the author's choice 06.10.2026 16:3x MSK: «the login page of the account»):
     /// the bot's own sign-in, named apart so that a build reading only the roads never offers it.
     struct Health: Decodable {
-        var ok: Bool; var paths: [Road]; var signIn: Road?; var mail: Road?
-        private enum CodingKeys: String, CodingKey { case ok, paths, signIn = "account", mail = "email" }
+        var ok: Bool; var paths: [Road]; var signIn: Road?
+        private enum CodingKeys: String, CodingKey { case ok, paths, signIn = "account" }
     }
     static let signInChannel = 3
-    static let mailChannel = 4
     /// The start's answer: the nonce the outer link carries (no secret there), the claim this phone alone holds and waits with,
     /// the link, the term.
     struct Started: Decodable { var nonce: String; var claim: String; var link: String; var app_link: String?; var expires_ms: UInt64 }
@@ -170,36 +169,6 @@ enum MTBizService {
         if name.isEmpty && word("bio").isEmpty && photo == nil && word("nick").isEmpty { return nil }
         return Card(name: name, bio: word("bio"), photo: photo, claimedName: word("nick"))
     }
-    /// THE ADDRESS'S DOOR (the author's word 06.10.2026 17:5x MSK: «a second sign-in by e-mail ... the third way»): offered
-    /// only while the service names it -- no dead door on the login page.
-    static func mailDoor() async -> Road? { await health()?.mail }
-    struct MailStarted: Decodable { var nonce: String; var claim: String; var expires_ms: UInt64 }
-    enum MailStart { case started(MailStarted), refused(String) }
-    /// The code is mailed from montana.quest to the address, for the person's own key.
-    static func emailStart(_ email: String, subject: String) async -> MailStart {
-        let silent = "The confirmation service did not answer. Try again in a minute."
-        guard let got = await call("/email/start", json: ["email": email, "subject": subject, "lang": MTLanguage.code]) else { return .refused(silent) }
-        switch got.1 {
-        case 200: return (try? JSONDecoder().decode(MailStarted.self, from: got.0)).map { .started($0) } ?? .refused(silent)
-        case 400: return .refused("This address does not look right.")
-        case 429, 503: return .refused("Wait a minute before asking again.")
-        case 502: return .refused("The letter could not be sent. Try again in a minute.")
-        default: return .refused(silent)
-        }
-    }
-    enum MailFinish { case confirmed(Data), wrong(Int), gone, failed }
-    /// The code typed back: the service compares it and answers with the signed confirmation of the address.
-    static func emailFinish(nonce: String, claim: String, code: String) async -> MailFinish {
-        guard let got = await call("/email/finish", json: ["nonce": nonce, "claim": claim, "code": code]) else { return .failed }
-        switch got.1 {
-        case 200: return attestation(in: got.0).map { .confirmed($0) } ?? .failed
-        case 403:
-            let left = (try? JSONSerialization.jsonObject(with: got.0) as? [String: Any])?["left"] as? Int ?? 0
-            return .wrong(left)
-        case 410: return .gone
-        default: return .failed
-        }
-    }
     /// The person's card into the catalog «number -> person»: only with the confirmation issued last for the number.
     static func dirPut(attest: String, card: [String: String]) async -> Bool {
         await call("/dir/put", json: ["attestation": attest, "card": card])?.1 == 200
@@ -243,30 +212,6 @@ enum MTBizPhone {
         guard let pub = MontanaSeed.keys()?.pub, let open = MTBizCore.attestOpen(a),
               open.subject == subject(pub), open.e164 == e164 else { return false }
         return MTBizPlace.write(file, a)
-    }
-}
-
-/// THE ADDRESS CONFIRMED ON THIS PHONE: the service's signed confirmation (MTBE), kept in the person's own folder of the
-/// Business beside the number's; the core reads it only once the service's pinned key proves the signature.
-enum MTBizEmail {
-    static let file = "email.mtbe"
-    static func confirmed() -> MTBizCore.EmailAttest? { MTBizPlace.read(file).flatMap { MTBizCore.emailOpen($0) } }
-    /// A confirmation is kept only when the core proves it and it names this person's key and the address asked for.
-    @discardableResult
-    static func keep(_ a: Data, email: String) -> Bool {
-        guard let pub = MontanaSeed.keys()?.pub, let open = MTBizCore.emailOpen(a),
-              open.subject == MTBizPhone.subject(pub), open.email == email else { return false }
-        return MTBizPlace.write(file, a)
-    }
-    /// The address in the core's one shape (mt-business valid_email): trimmed, lower-cased, printable ASCII, one @, a local
-    /// part of 1..64, a dotted domain with no empty label, 254 at most. Nil -- not an address yet.
-    static func shaped(_ typed: String) -> String? {
-        let s = typed.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let parts = s.split(separator: "@", omittingEmptySubsequences: false)
-        guard (3...254).contains(s.count), s.unicodeScalars.allSatisfy({ (33...126).contains($0.value) }), parts.count == 2,
-              (1...64).contains(parts[0].count), parts[1].contains("."),
-              !parts[1].split(separator: ".", omittingEmptySubsequences: false).contains(where: { $0.isEmpty }) else { return nil }
-        return s
     }
 }
 
@@ -958,144 +903,6 @@ struct MTBizCountrySheet: View {
             .contentShape(Rectangle())
         }
         .listRowBackground(MTGlassRowPlate())
-    }
-}
-
-/// THE FLOW OF ONE ADDRESS'S CONFIRMATION: the code asked for the person's own key, the code typed back, the signed answer
-/// kept. The person is never born here: the login page's door of the address makes them first (MontanaOnboardingView).
-@MainActor
-final class MTBizMailFlow: ObservableObject {
-    @Published var sentTo: String?
-    @Published var busy = false
-    @Published var refusal: String?
-    private var started: MTBizService.MailStarted?
-
-    func reset() {
-        sentTo = nil
-        started = nil
-        busy = false
-    }
-    func start(_ email: String) {
-        guard !busy else { return }
-        busy = true
-        Task {
-            await MontanaSeed.birth?.value   // a person still being born behind the page: the code waits for the birth
-            let keys = Task.detached(priority: .userInitiated) { MontanaSeed.keys()?.pub }
-            guard let pub = await keys.value else {
-                refuse("The identity could not be stored on this device")
-                return
-            }
-            switch await MTBizService.emailStart(email, subject: MTBizPhone.subject(pub)) {
-            case .started(let s):
-                started = s
-                sentTo = email
-                busy = false
-                MontanaP2PTrace.mark("biz_mail", "started")
-            case .refused(let key):
-                refuse(key)
-            }
-        }
-    }
-    func finish(_ code: String, done: @escaping () -> Void) {
-        guard !busy, let s = started, let email = sentTo else { return }
-        busy = true
-        Task {
-            switch await MTBizService.emailFinish(nonce: s.nonce, claim: s.claim, code: code) {
-            case .confirmed(let a):
-                guard MTBizEmail.keep(a, email: email) else { refuse("The confirmation does not match this address."); return }
-                MontanaP2PTrace.mark("biz_mail", "confirmed")
-                busy = false
-                done()
-            case .wrong(let left):
-                busy = false
-                refusal = String(format: String(localized: "The code is not right. Tries left: %lld"), left)
-            case .gone:
-                reset()
-                refuse("The code has expired. Ask for a new one.")
-            case .failed:
-                refuse("The confirmation service did not answer. Try again in a minute.")
-            }
-        }
-    }
-    private func refuse(_ key: String) {
-        busy = false
-        refusal = key
-        MontanaP2PTrace.mark("biz_mail", "refused")
-    }
-}
-
-/// THE ADDRESS'S DOOR (the author's word 06.10.2026 17:5x MSK): the field of the address and «Next»; then the field of the code,
-/// which the system fills from the letter (one-time code), and six digits confirm at once -- no second button.
-struct MTBizMailDoor: View {
-    var onConfirmed: () -> Void
-    @StateObject private var flow = MTBizMailFlow()
-    @State private var typed = ""
-    @State private var code = ""
-    @FocusState private var typing: Bool
-
-    var body: some View {
-        VStack(spacing: 16) {
-            if let sent = flow.sentTo {
-                // USER-DATA: the address the person typed
-                Text("We sent it to \(sent)").font(.body).foregroundColor(.white)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                plate {
-                    TextField("Code", text: $code)
-                        .keyboardType(.numberPad)
-                        .textContentType(.oneTimeCode)
-                        .font(.title3.weight(.semibold).monospacedDigit()).foregroundColor(.white)
-                        .focused($typing)
-                        .onChange(of: code) { _, entered in
-                            let digits = String(entered.filter { $0.isASCII && $0.isNumber }.prefix(6))
-                            if digits != entered { code = digits }
-                            if digits.count == 6 { flow.finish(digits, done: onConfirmed) }
-                        }
-                }
-                Button { flow.reset(); code = ""; typing = true } label: {
-                    Text("Change address").font(.body).frame(maxWidth: .infinity, minHeight: 44).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).foregroundColor(Color.white.opacity(0.8))
-                Spacer(minLength: 0)
-            } else {
-                plate {
-                    TextField("Email", text: $typed)
-                        .keyboardType(.emailAddress)
-                        .textContentType(.emailAddress)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.title3.weight(.semibold)).foregroundColor(.white)
-                        .focused($typing)
-                        .submitLabel(.next)
-                        .onSubmit { if let a = MTBizEmail.shaped(typed) { flow.start(a) } }
-                }
-                Spacer(minLength: 0)
-                Button { if let a = MTBizEmail.shaped(typed) { typing = false; flow.start(a) } } label: {
-                    HStack(spacing: 8) {
-                        if flow.busy { ProgressView().tint(.white) }
-                        Text("Next")
-                    }
-                }
-                .buttonStyle(MTLoginDoorStyle(tint: MontanaOctagon.platformBlue))
-                .disabled(MTBizEmail.shaped(typed) == nil || flow.busy)
-            }
-        }
-        .frame(maxWidth: 420)
-        .task {
-            try? await Task.sleep(nanoseconds: 400_000_000)   // a field focused while its page still rises does not take the keyboard
-            typing = true
-        }
-        .onChange(of: flow.sentTo) { _, _ in typing = true }
-        .mtBizWord($flow.refusal, title: "Email")
-    }
-
-    /// The field's plate, as the number's field wears it.
-    private func plate<Field: View>(@ViewBuilder _ field: () -> Field) -> some View {
-        field()
-            .padding(.horizontal, 16)
-            .frame(height: 64)
-            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(MontanaOctagon.barMaterial))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.white.opacity(typing ? 1 : 0.35), lineWidth: typing ? 2 : 1))
     }
 }
 

@@ -1573,7 +1573,9 @@ struct ChatConversationView: View {
     /// THE COIN FROM THE FIELD (ChatInputBar's coin mode): the number written goes as a coin letter (MTCoinSend.transfer); a short
     /// balance refuses before anything leaves, and the field keeps the number.
     private func sendCoin(_ n: Int) {
-        if MTCoinSend.transfer(n, to: chat, store: store) { input.text = "" } else { coinRefused = true }
+        Task { @MainActor in
+            if await MTCoinSend.transfer(n, to: chat, store: store) { input.text = "" } else { coinRefused = true }
+        }
     }
 
     /// THE GAME'S BOARD OVER THE CHAT: it opens a game -- one answered, played or over -- and accepts nothing.
@@ -1773,19 +1775,29 @@ struct ChatConversationView: View {
 
     private var chatCoreM1: some View {
         chatCoreL2
-        .confirmationDialog("Delete entire chat?", isPresented: $confirmDeleteWholeChat, titleVisibility: .visible) {
-            Button("Delete chat", role: .destructive) {
-                store.purgeLocalCopies(convKey)   // the disk clears BEFORE the feed leaves memory
-                store.messages[chat.name] = []
-                store.deletedChats.insert(convKey)
-                LiveDraftState.purgeConversation(convKey)
-                LiveDraftState.purgeConversation(chat.name)
-                selectingMsgs = false; selectedMsgs.removeAll()
-                dismiss(); ui.closeChat()
+        // THE SELECTION'S «DELETE CHAT» TAKES THE ONE ROAD (the author's word 11.10.2026 20:1x MSK: «check with the critic the whole
+        // architecture of the chats' time chains, so there are no holes by the constitution»): its own erasing emptied the feed and
+        // set the mark past ChatStore.deleteChat -- no coin guard, no tombstones; the journal, the queue, the extension box, the list
+        // record and the shelf row stayed, and the local room's empty key was marked deleted. The one sheet asks the one question.
+        .overlay {
+            if confirmDeleteWholeChat {
+                MontanaDeleteChatSheet(
+                    title: store.title(for: chat),
+                    photoURL: store.avatarFor(chat), color: chat.color, initial: store.initial(for: chat),
+                    canDeleteForBoth: MontanaConv.holds(chat.convRef),
+                    coinsTravel: store.coinsTravel(chat),
+                    onBoth: { deleteWholeChat(forBoth: true) },
+                    onMine: { deleteWholeChat(forBoth: false) },
+                    onCancel: { confirmDeleteWholeChat = false })
             }
-            Button("Cancel", role: .cancel) {}
         }
         .mtBoxed()
+    }
+    private func deleteWholeChat(forBoth: Bool) {
+        confirmDeleteWholeChat = false
+        guard store.deleteChat(chat, forBoth: forBoth) else { return }
+        selectingMsgs = false; selectedMsgs.removeAll()
+        dismiss(); ui.closeChat()
     }
 
     private var chatCoreM2: some View {
@@ -2053,8 +2065,9 @@ struct ChatConversationView: View {
         }
         // THE COIN MINTS WHILE THE RIBBON IS SHOWN (the author's word 02.10 19:37): every change of the letters, and the coin's
         // own turn, hands this chat's letters to the one tally; it pays each name once and walks only the letters born since.
-        .onChange(of: ribbon || groupMints ? store.messagesRev : -1, initial: true) { _, _ in
-            if ribbon { MTChatMint.shared.credit(store.messages[chat.name] ?? [], oneEach: true) }   // one coin a bubble (MTMoneyFlow)
+        .onChange(of: coinStands || groupMints ? store.messagesRev : -1, initial: true) { _, _ in
+            // EVERY PAIR'S CHAT MINTS, RIBBON OR NOT (the author's word 11.10.2026 21:2x MSK, MTCoinSend.mintLetter): the level's coins a letter.
+            if coinStands { MTChatMint.shared.credit(store.messages[chat.name] ?? [], oneEach: true) }
             else if groupMints { MTChatMint.shared.credit(store.messages[chat.name] ?? [], longerThan: MTChatMint.groupLetterFloor, in: chat.name) }
         }
         // WHOM TO INVITE INTO THE GROUP'S CALL (MTRoomMark chose the kind): the sheet hangs on the chat, never inside the bar's item
@@ -2299,10 +2312,12 @@ struct ChatConversationView: View {
                                                    : chat.convId != nil && (m.isMine || MontanaConv.holds(convKey)),
                 ladder: m.isMine && chat.convId != nil && !MTRowLetter.ownRow(m.text),   // the rung and its moment over the menu; none for a note to oneself, nor a post's card
                 canDelete: !whole.contains { x in MTCoinSend.travels(x) },   // a coin letter on its way keeps its coins and its row (05.10)
-                onDeleteMine: { for x in whole { delete(x) }; close() },
+                // One road for the whole plate, one tombstone write and one history write (the critic R-1, 11.10.2026); «for
+                // everyone» finds every name already buried, so its notices write nothing more.
+                onDeleteMine: { store.deleteLocally(chat: chat.name, whole); close() },
                 onDeleteEveryone: {
+                    store.deleteLocally(chat: chat.name, whole)
                     for x in whole {
-                        delete(x)
                         if let sid = x.msgId, chat.isGroup {   // the group's carrier takes the deletion to every phone of it
                             store.deleteEverywhere(chat: chat.name, msgId: sid)
                             MTGroup.shared.signal(deleteMark + sid, in: chat.name, store: store)
@@ -4237,8 +4252,11 @@ struct ChatConversationView: View {
     // Top: left "Delete chat", right "Cancel". Bottom: [Delete · Share · Forward].
     var selectionTopBar: some View {
         HStack {
-            Button(role: .destructive) { confirmDeleteWholeChat = true } label: {
-                Text("Delete chat").foregroundColor(.red).font(.subheadline.weight(.semibold))
+            // The room with no wire is not deleted (ChatStore.deleteChat refuses it): the bar offers no deed the road refuses.
+            if !ChatStore.isLocalRoom(chat.name) {
+                Button(role: .destructive) { confirmDeleteWholeChat = true } label: {
+                    Text("Delete chat").foregroundColor(.red).font(.subheadline.weight(.semibold))
+                }
             }
             Spacer()
             Text("Selected: \(selectedMsgs.count)").foregroundColor(.white).font(.subheadline)

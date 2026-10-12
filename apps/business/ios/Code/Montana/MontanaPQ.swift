@@ -703,12 +703,42 @@ extension MontanaArchive {
 
     /// No conversation means no trace of it on disk: letters, sealed attachments, the folder itself.
     /// Deleting for oneself and deleting for both erase the SAME local storage.
+    /// A FOLDER ALREADY GONE IS NOT FORGOTTEN AGAIN (12.10.2026, T1 during the 12:30 MSK call: the pass over the erased conversations,
+    /// run at every opening (sealArchiveFolderNames), cleared the marks of the same ninety-six folders three times in two seconds --
+    /// 276 archive_forget lines, five sealed records read and written again for every folder each time). A folder's marks are
+    /// forgotten once in a run; a folder that stands on the disk again -- an assembly that caught up after the erasure -- is removed
+    /// and forgotten anew, so the pass keeps its guarantee and loses its repeat.
+    private static var forgottenFolders = Set<String>()   // BOUND-OK: the erased conversations' folders of this run; ioQueue alone
     static func deleteChatFolder(convRef: String) {
         ioQueue.async {
             guard let label = folderLabel(for: convRef) else { return }
             let dir = rootURL.appendingPathComponent(MontanaPaths.chats).appendingPathComponent(sanitizeName(label))
-            try? FileManager.default.removeItem(at: dir)
+            let stood = FileManager.default.fileExists(atPath: dir.path)
+            if stood { try? FileManager.default.removeItem(at: dir) }
+            guard stood || !forgottenFolders.contains(label) else { return }
+            forgottenFolders.insert(label)
+            forgetFolderMarks(convRef: convRef, folder: label)
         }
+    }
+    /// THE FOLDER'S MARKS GO WITH THE FOLDER (the critic B-3, 11.10.2026; the author's word 11.10.2026 20:1x MSK: «check the whole
+    /// architecture of the chats' time chains, so there are no holes by the constitution»): the head, name-head, folder-map and
+    /// cursor marks are economies that say «this folder already holds it», and they outlived the directory -- a folder born again
+    /// for the same conversation never got its pipe head again (writeHeadIn: heads[folder] == form; rememberFolder: the map
+    /// unchanged), so a restore by seed laid a transcript nobody could answer, and its blocks below the old cursors never reached
+    /// the other devices. Queue-only, beside the removal.
+    private static func forgetFolderMarks(convRef: String, folder: String) {
+        for key in [headsKey, nameHeadsKey] {
+            var marks = (MontanaLocalVault.getDecrypted(key).flatMap { d in try? JSONDecoder().decode([String: String].self, from: d) }) ?? [:]
+            if marks.removeValue(forKey: folder) != nil, let d = try? JSONEncoder().encode(marks) { MontanaLocalVault.setEncrypted(key, d) }
+        }
+        let conv = MontanaQueueKeys.sha256(Data(convRef.utf8)).montanaHexString
+        var map = (MontanaLocalVault.getDecrypted(folderMapKey).flatMap { d in try? JSONDecoder().decode([String: String].self, from: d) }) ?? [:]
+        if map.removeValue(forKey: conv) != nil, let d = try? JSONEncoder().encode(map) { MontanaLocalVault.setEncrypted(folderMapKey, d) }
+        for key in [cursorKey, boxedKey] {
+            var cursor = (MontanaLocalVault.getDecrypted(key).flatMap { d in try? JSONDecoder().decode([String: UInt64].self, from: d) }) ?? [:]
+            if cursor.removeValue(forKey: folder) != nil, let d = try? JSONEncoder().encode(cursor) { MontanaLocalVault.setEncrypted(key, d) }
+        }
+        MontanaP2PTrace.mark("archive_forget", "folder=" + String(folder.prefix(8)) + " marks cleared")
     }
 
     /// Conversations this device holds, by their folder name under Chats/.
@@ -809,6 +839,115 @@ extension MontanaArchive {
             mt_archive_block_id(sp.bindMemory(to: UInt8.self).baseAddress, sealed.count, &tag, &seq)
         }
         return rc == 0 ? seq : nil
+    }
+
+    // ── the person's other devices through the box (the author's word 11.10.2026 12:1x MSK, No.60: «do it») ──
+    // Nana's iPhone 17 and iPad 9 hold one seed; the road above reached the twin only at a public address, and a phone behind a
+    // carrier's NAT has none: a week of every diary on Lauterbourg holds no «HISTORY → own device» line. A sleeping iPhone is woken
+    // by Apple's push alone and cannot hold a letter for another, so the node holds it: the blocks, already sealed under the
+    // history key, ride the cargo road of a part (MTKeeping.lay) and a silent letter in a pipe only this seed's devices derive
+    // wakes the others; they file the blocks by the road a restore takes (absorb), so every device holds the person's whole
+    // history -- the incoming and the own, whatever road a letter came by.
+    nonisolated static let twinPipe = "twin:history"   // NOT-UI: the box name of the pipe of this seed's devices
+    private static let boxedKey = "mt.history.boxed"   // per conversation: the first block not yet laid for the other devices
+    private static let twinSeenKey = "mt.history.twinSeen"   // the letters of the other devices already filed here
+    private static let twinCap = 8 << 20   // one letter's file stays small; what is left rides the next round
+    /// The pipe's secret: the history key under its own label and this app's name -- only a device holding this seed's words
+    /// derives it, and two apps of one seed on one phone (Montana and Business) keep two pipes, never one archive.
+    nonisolated static func twinSecret() -> Data? {
+        guard isWarm, let (hk, _, _) = keys() else { return nil }
+        var m = Data("mt-twin-box".utf8); m.append(0); m.append(contentsOf: (Bundle.main.bundleIdentifier ?? "").utf8); m.append(0); m.append(hk)
+        return Data(SHA256.hash(data: m))
+    }
+    /// This device's name in the pipe: the node rings every device of the pipe but the one that spoke.
+    nonisolated static var twinDeviceRef: String { (MontanaSeed.twin ?? "") + "#" + E2E.deviceTag() }
+    /// The one place a label of the seed's own pipe is signed: by this device, never by the person (P-118.1's one exception).
+    nonisolated static func twinSid(_ cw: String) -> String { MontanaWakePush.subId(cw, ref: twinDeviceRef) }
+    nonisolated static func twinListening() -> [String: Data] {
+        guard let s = twinSecret() else { return [:] }
+        return [twinPipe: s]
+    }
+    private static var twinDue = false
+    /// A block was written: the other devices get it within half a minute, in one letter with whatever came beside it.
+    static func twinSoon() {
+        ioQueue.async {
+            guard !twinDue else { return }
+            twinDue = true
+            ioQueue.asyncAfter(deadline: .now() + 30) {
+                twinDue = false
+                Task.detached(priority: .utility) { await layForTwins() }
+            }
+        }
+    }
+    private static func layForTwins() async {
+        let gathered: (Data, [String: UInt64], Int, Bool)? = ioQueue.sync {   // MAIN-SAFE-SYNC: a detached task waits on the archive's queue, never the main thread
+            guard let wt = writerTag() else { return nil }
+            let cursor = (MontanaLocalVault.getDecrypted(boxedKey)
+                .flatMap { try? JSONDecoder().decode([String: UInt64].self, from: $0) }) ?? [:]
+            var blob = Data(), tops: [String: UInt64] = [:], n = 0, more = false
+            for chat in conversations() {
+                if twinCap < blob.count { more = true; break }
+                let from = cursor[chat] ?? 0
+                guard let stream = export(chat: chat, writerTag: wt, fromSeq: from) else { continue }
+                var top = from
+                for (seq, sealed) in stream {
+                    var len = UInt32(sealed.count).littleEndian
+                    blob.append(Data(bytes: &len, count: 4)); blob.append(sealed)
+                    top = max(top, seq + 1); n += 1
+                }
+                if top != from { tops[chat] = top }
+            }
+            return (blob, tops, n, more)
+        }
+        guard let (blob, tops, n, more) = gathered, 0 < n, let secret = twinSecret(),
+              let dir = try? MontanaBackup.shelf() else { return }
+        let url = dir.appendingPathComponent(UUID().uuidString + ".twin")
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard (try? blob.write(to: url)) != nil, var road = await MTKeeping.lay(url) else {
+            return MontanaP2PTrace.mark("twin_hist", "the blocks did not reach the nodes n=\(n)")
+        }
+        road["w"] = "hist"; road["n"] = n; road["f"] = writerTag()?.montanaHexString ?? ""
+        guard await MTKeeping.knock(secret, road, silent: true, sender: twinDeviceRef) else {
+            return MontanaP2PTrace.mark("twin_hist", "no door boxed the letter n=\(n)")
+        }
+        ioQueue.sync {   // MAIN-SAFE-SYNC: a detached task waits on the archive's queue, never the main thread
+            var cursor = (MontanaLocalVault.getDecrypted(boxedKey)
+                .flatMap { try? JSONDecoder().decode([String: UInt64].self, from: $0) }) ?? [:]
+            for (k, v) in tops { cursor[k] = max(cursor[k] ?? 0, v) }
+            if let d = try? JSONEncoder().encode(cursor) { MontanaLocalVault.setEncrypted(boxedKey, d) }
+        }
+        MontanaP2PTrace.mark("twin_hist", "laid blocks=\(n) bytes=\(blob.count) more=\(more ? 1 : 0)")
+        if more { twinSoon() }
+    }
+    /// A row of the box in the pipe of this seed's devices is this file's own, never a letter of the feed.
+    nonisolated static func twinTakes(_ row: [String: String]) -> Bool {
+        guard row["c"] == twinPipe else { return false }
+        guard let o = MTKeeping.word(row["t"] ?? ""), (o["w"] as? String) == "hist", let mid = row["m"], !mid.isEmpty else { return true }
+        Task.detached(priority: .utility) { await takeFromTwin(o, mid: mid) }
+        return true
+    }
+    private static func takeFromTwin(_ o: [String: Any], mid: String) async {
+        let mine = ioQueue.sync { writerTag()?.montanaHexString ?? "" }   // MAIN-SAFE-SYNC: a detached task waits on the archive's queue, never the main thread
+        guard (o["f"] as? String) != mine else { return }   // this device's own letter, heard back from the box
+        let seen = UserDefaults.standard.stringArray(forKey: twinSeenKey) ?? []
+        guard !seen.contains(mid), let dir = try? MontanaBackup.shelf() else { return }
+        let url = dir.appendingPathComponent(UUID().uuidString + ".twin")
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard await MTKeeping.fetch(o, to: url), let blob = try? Data(contentsOf: url) else {
+            return MontanaP2PTrace.mark("twin_hist", "the blocks did not come whole")
+        }
+        var i = 0, filed = 0
+        let bytes = [UInt8](blob)
+        while i + 4 <= bytes.count {
+            let len = Int(UInt32(bytes[i]) | UInt32(bytes[i+1]) << 8 | UInt32(bytes[i+2]) << 16 | UInt32(bytes[i+3]) << 24)
+            i += 4
+            guard 0 < len, i + len <= bytes.count else { break }
+            let sealed = Data(bytes[i..<(i + len)])
+            i += len
+            if ioQueue.sync(execute: { absorb(sealed) }) { filed += 1 }   // MAIN-SAFE-SYNC: a detached task waits on the archive's queue, never the main thread
+        }
+        UserDefaults.standard.set(Array((seen + [mid]).suffix(512)), forKey: twinSeenKey)
+        MontanaP2PTrace.mark("twin_hist", "taken blocks=\(filed)")
     }
 
     /// Wire name of a sealed block: the same name a media chunk gets, computed by the same core
@@ -1016,13 +1155,13 @@ extension MontanaArchive {
         guard let (h, _, a) = keys() else { return [] }
         let book = refBook()
         var out: [RestoredChat] = []
-        var headsS = 0, headsA = 0, headsN = 0, faces = 0
+        var headsS = 0, headsA = 0, headsN = 0, faces = 0, closedN = 0, reopenedN = 0
         for folder in folders {
             var ref: String? = nil
             var name: String? = nil
             var items: [RestoredItem] = []
             var headSecret: Data? = nil
-            var closedThere = false
+            var closedThere = false, closedOnce = false
             for sealed in readLog(folder: folder) {
                 for it in openBlock(sealed, hk: h, acct: a) {
                     if it.dir == headDir {
@@ -1034,8 +1173,11 @@ extension MontanaArchive {
                             // answers for the correspondence again, and the reference is its chat key.
                             headsS += 1
                             headSecret = sec
+                            // THE LAST HEAD DECIDES (11.10.2026, No.61): a correspondence closed at the other end and opened again
+                            // writes «x:» and then «s:»; read as «closed forever», the reopened folder came back unanswerable.
+                            closedThere = false
                         } else if s.hasPrefix("x:") {   // COMPAT-LOCAL: the pipe was closed at the other end (24.09)
-                            closedThere = true
+                            closedThere = true; closedOnce = true
                         } else if s.hasPrefix("a:") {   // COMPAT-LOCAL: archive head, see above
                             headsA += 1
                             if ref == nil, MontanaConv.holds(String(s.dropFirst(2))) { ref = String(s.dropFirst(2)) }
@@ -1053,6 +1195,7 @@ extension MontanaArchive {
             }
             // A PIPE CLOSED AT THE OTHER END IS NAMED, NEVER RE-ESTABLISHED (24.09): the history is the conversation's,
             // and the other side holds the secret no more — a revived pipe would be a composer writing into nothing.
+            if headSecret != nil, closedOnce { if closedThere { closedN += 1 } else { reopenedN += 1 } }
             if let sec = headSecret {
                 if closedThere { ref = MTPipeBook.reference(of: sec) }
                 else if let r = MTPipeBook.establish(secret: sec, seal: false) { ref = r }
@@ -1072,7 +1215,7 @@ extension MontanaArchive {
             if face != nil { faces += 1 }
             out.append(RestoredChat(folder: folder, ref: ref, name: name, face: face, items: items))
         }
-        MontanaP2PTrace.mark("archive_restore", "chats=\(out.count) rows=\(out.reduce(0) { $0 + $1.items.count }) headed=\(out.filter { $0.ref != nil }.count) heads=s\(headsS)/a\(headsA)/n\(headsN) faces=\(faces)")
+        MontanaP2PTrace.mark("archive_restore", "chats=\(out.count) rows=\(out.reduce(0) { $0 + $1.items.count }) headed=\(out.filter { $0.ref != nil }.count) heads=s\(headsS)/a\(headsA)/n\(headsN) faces=\(faces) closed=\(closedN) reopened=\(reopenedN)")
         return out
     }
     private static func folderName(forConv conv: Data) -> String? {

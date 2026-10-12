@@ -18,6 +18,8 @@
 import Foundation
 import UserNotifications
 import Network
+import Security
+import CryptoKit
 import WebRTC
 import CallKit
 import ReplayKit
@@ -79,8 +81,9 @@ enum MontanaCallHandle {
         return m
     }
 
-    /// The token for THIS call. Every call gets a new one: repetition is exactly what links.
+    /// The token for THIS call. Every call gets a new one: repetition is exactly what links -- save the one repeat below.
     static func token(for conv: String) -> String {
+        if let held = heldToken(conv) { return held }
         let tok = montanaRandom(16).map { String(format: "%02x", $0) }.joined()
         var m = rows()
         m.insert([tok, conv], at: 0)
@@ -94,6 +97,33 @@ enum MontanaCallHandle {
     /// cannot erase somebody else's journal after the fact anyway.
     static func conv(for token: String) -> String {
         rows().first { $0.count == 2 && $0[0] == token }?[1] ?? token
+    }
+
+    /// A CALL THE SYSTEM HELD KEEPS ITS TOKEN FOR THE REPEAT (12.10.2026, the author's word 12:09 MSK: «a missed call must show
+    /// like a native cellular call»). Focus lets a second call from the same caller ring within three minutes («Allow Repeated
+    /// Calls») and knows the caller by the handle alone: a fresh token per call made every repeat a stranger, so no repeat could
+    /// ever ring. The token of a call the system held goes once more to the same conversation's next call inside that window, and
+    /// never after it. It links nothing the list does not show already: a held call never reaches Recents, and the repeat that
+    /// does carries the same name beside its token.
+    static let repeatWindowS: Double = 180
+    static let repeatKey = "callHandleRepeat"
+    private static func heldRows() -> [String: [String]] {
+        guard let d = MontanaLocalVault.getDecrypted(repeatKey),
+              let m = try? JSONDecoder().decode([String: [String]].self, from: d) else { return [:] }
+        return m
+    }
+    private static func heldToken(_ conv: String) -> String? {
+        guard let r = heldRows()[conv], r.count == 2, let at = Double(r[1]),
+              Date().timeIntervalSince1970 - at < repeatWindowS else { return nil }
+        return r[0]
+    }
+    static func held(conv: String, token: String) {
+        guard !conv.isEmpty, !token.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        // BOUND-OK: a row lives the repeat window alone -- the few conversations held in the last three minutes.
+        var m = heldRows().filter { r in r.value.count == 2 && now - (Double(r.value[1]) ?? 0) < repeatWindowS }
+        m[conv] = [token, String(now)]
+        if let d = try? JSONEncoder().encode(m) { _ = MontanaLocalVault.setEncrypted(repeatKey, d) }
     }
 }
 
@@ -461,7 +491,15 @@ final class MontanaCall: NSObject {
     }
 
     func postSecondLine(from: String, video: Bool) {
-        if secondFrom == from, secondUUID != nil { return }          // already ringing
+        // PUSHKIT'S LAW IS PER PUSH ON THE SECOND LINE TOO (11.10.2026, No.61): a second wake of the caller already ringing on
+        // the second line returned here unreported, and the system kills a process that leaves a voip push unreported -- the
+        // live call dies with it. The standing second line is reported again under its own uuid, as the first line is in
+        // postForPush: the system answers «already exists», and the push is answered.
+        if secondFrom == from, let u = secondUUID {
+            MontanaP2PTrace.mark("ring_posted", "second-line standing from=\(String(from.prefix(10))) — reported again")
+            reportIncoming(uuid: u, from: from, video: video)
+            return
+        }
         guard secondUUID == nil else { reportDummyAndEnd(from: from); return }   // a THIRD caller
         let u = UUID()
         secondUUID = u; secondFrom = from; secondVideo = video
@@ -482,11 +520,25 @@ final class MontanaCall: NSObject {
         secondUUID = nil; secondFrom = nil; secondDevice = ""; secondVideo = false
         secondSeed = nil; secondOffer = nil
     }
-    private func expireSecond() {
+    /// THE SECOND LINE ENDS IN SILENCE, ANSWERED ELSEWHERE (11.10.2026, No.61): another device of this person took the second
+    /// caller -- by «call-taken» or by its own answer heard on the shared pipe -- and the second line rang on here until its own
+    /// expiry. It ends with the system's own reason, no end word back, its seed buried against late copies.
+    private func secondTakenElsewhere(by why: String) {
         guard secondUUID != nil else { return }
+        MontanaP2PTrace.mark("call_taken_elsewhere", "second-line by=\(why)")
+        MontanaCall.burySeed(secondSeed)
+        clearSecond(report: .answeredElsewhere)
+    }
+    /// AN UNANSWERED SECOND LINE IS A MISSED CALL HERE TOO (12.10.2026, the critic's finding 13 of helper 65): the system's list
+    /// got its line from the unanswered report, and the person got no row of ours and no notice -- the one missed call of the app
+    /// that left no trace in the app. It writes both, as every unanswered call does (onCallLog).
+    private func expireSecond() {
+        guard secondUUID != nil, let sf = secondFrom else { return }
         MontanaP2PTrace.mark("ring_dead", "second-line expired")
+        let video = secondVideo, seed = secondSeed
         MontanaCall.burySeed(secondSeed)
         clearSecond(report: .unanswered)
+        onCallLog?(sf, video, true, 0, true, false, seed, false, false)
     }
     private func declineSecond() {
         guard let sf = secondFrom else { return }
@@ -497,6 +549,16 @@ final class MontanaCall: NSObject {
         MontanaP2PTrace.mark("ring_dead", "second-line declined")
         MontanaCall.burySeed(secondSeed)
         clearSecond(report: nil)   // the CXEndCallAction removes the call itself
+    }
+    /// A second line the system holds is missed as the first line is (ringHeld): its caller heard «ringing» already (the second
+    /// line's own word), no end word follows, and the person gets the missed row and banner the system will not write.
+    private func secondHeld(_ why: String) {
+        guard let sf = secondFrom else { return }
+        MontanaP2PTrace.mark("ring_held", "why=\(why) second-line")
+        let video = secondVideo, seed = secondSeed
+        MontanaCall.burySeed(secondSeed)
+        clearSecond(report: nil)   // the system holds no such call
+        onCallLog?(sf, video, true, 0, true, false, seed, false, false)
     }
     private func answerSecond() {
         guard let sf = secondFrom, let su = secondUUID else { return }
@@ -598,10 +660,13 @@ final class MontanaCall: NSObject {
     /// which arrives BEFORE any lane of ours is up — and from the caps of the lane copy.
     private(set) var peerReadsVoipAnswer = false
     private var declinedByMe = false   // user tapped Decline on the ringing call — no "missed" banner
+    private var answeredElsewhere = false   // another device of this person took the call (call-taken): no "missed" banner
+    private var takenTold = false   // the caller told the person's other devices which one took the call
+    private var ringLifeTimer: Timer?   // the incoming ring's one life, armed at its birth (No.61)
     private var answeredByMe = false   // user tapped Accept: even if the offer never arrived, this is no «missed» (K-12)
     // One truth for "this ring went unanswered": any teardown path (call-end signal, cancel,
     // timeout, phantom-fix) reports the SAME CallKit reason — .unanswered = red missed in Phone Recents.
-    private var unansweredIncoming: Bool { !isInitiator && connectedAt == nil && !declinedByMe }
+    private var unansweredIncoming: Bool { !isInitiator && connectedAt == nil && !declinedByMe && !answeredElsewhere }
     private var ended = false
     private var endSignalSent = false
     private var peerRinging = false
@@ -666,14 +731,19 @@ final class MontanaCall: NSObject {
 
     // log/duration
     private var startedAt: Date?
-    private var connectedAt: Date?
+    private(set) var connectedAt: Date?
     /// A call stands connected, placed or answered: each of its seconds mints one coin on this side (MTCallMint, 07.10.2026).
     var mintsTalk: Bool { connectedAt != nil }
     /// The second of talk now (MTCallMint): the call's peer, a name of this call alone and a name of this call's second.
     var talkSecond: (peer: String, call: String, ref: String)? {
-        guard let c = connectedAt, let p = peer else { return nil }
+        guard let p = peer, let t = talkElapsed else { return nil }
+        return (p, t.call, t.call + ":" + String(t.seconds))
+    }
+    /// The call in hand's name and the whole seconds it has talked (MTCallMint counts the seconds by this clock, 12.10.2026).
+    var talkElapsed: (call: String, seconds: Int)? {
+        guard let c = connectedAt, peer != nil else { return nil }
         let call = callSeed.map { MontanaHomeNode.hex($0.prefix(8)) } ?? String(Int(c.timeIntervalSince1970 * 1000))
-        return (p, call, call + ":" + String(Int(Date().timeIntervalSince(c))))
+        return (call, Int(Date().timeIntervalSince(c)))
     }
 
     // speakerphone
@@ -1104,6 +1174,7 @@ final class MontanaCall: NSObject {
             if !stun.isEmpty { servers = [RTCIceServer(urlStrings: stun)] }
             // 12.6: the TLS door first — it survives dead UDP and DPI; tcp, then udp.
             let ordered = uris.sorted { turnRank($0) < turnRank($1) }
+            MTRelayTrust.learn(ordered)   // the names the relay's certificate is checked against, by the system's own trust
             if !ordered.isEmpty {
                 servers.append(RTCIceServer(urlStrings: ordered, username: t.name, credential: t.credential))
             }
@@ -1141,7 +1212,7 @@ final class MontanaCall: NSObject {
         factory.setOptions(opts)
         MontanaP2PTrace.mark("call_ice", MontanaP2PNode.tunnelUp() ? "every adapter -- the tunnel among them" : "every adapter")
         let constraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
-        pc = factory.peerConnection(with: cfg, constraints: constraints, delegate: self)
+        pc = factory.peerConnection(with: cfg, constraints: constraints, certificateVerifier: MTRelayTrust.shared, delegate: self)
         let audioConstraints = RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)
         let audioSource = factory.audioSource(with: audioConstraints)
         let track = factory.audioTrack(with: audioSource, trackId: "mt_audio")
@@ -1227,6 +1298,16 @@ final class MontanaCall: NSObject {
         // the system prompt, the only time iOS shows it; denied — the alert with the road to
         // Settings, and the call goes on with sound. The track and the offer's video line do not
         // depend on it: a person without a camera still sees the peer.
+        // A RINGING CALL ASKS NOTHING AND SAYS NOTHING OF THE CAMERA (11.10.2026, No.61, the author's word «such a thing must
+        // not be possible by construction»): the prewarm of an incoming video call reached this gate while the phone only rang,
+        // and the system's camera prompt -- or our «camera denied» alert -- stood over the ring; the call could not be taken and
+        // the system ended it as declined (iPhone 17, 2176, 13:01:04Z: cam_ask system prompt, denied, call_end_sys). Until the
+        // person accepts, a camera not yet authorised waits; the accept road asks (proceedAccept), and its answer starts it.
+        if !isInitiator, state == "incoming", !answeredByMe,
+           AVCaptureDevice.authorizationStatus(for: .video) != .authorized {
+            MontanaP2PTrace.mark("cam_wait", "ringing -- the camera is asked after the accept")
+            return
+        }
         ensureCameraAccess { [weak self] ok in
             guard let self, ok else { return }
             self.startCapture(front: front, attempt: 0)
@@ -1767,6 +1848,12 @@ final class MontanaCall: NSObject {
         if let dn = displayName { presetPeerName(peer, dn) }
         nativeHandle = MontanaCallHandle.token(for: peer)   // the token is born BEFORE the first showing to the system
         self.peer = peer; self.peerDevice = device; self.isVideo = video
+        // A PAIR IN FIRST CONTACT IS TOLD AS SUCH (11.10.2026, No.63, the author's word 21:5x MSK: «the call did not go through»): the
+        // contact has not accepted the acquaintance, the ring knocks at their card (MontanaWakePush.cardRing), and their phone may not
+        // ring at all -- the screen says so until that phone's own «ringing» (statusText), never «Calling…» over a silence.
+        let firstContact = MTPipeBook.first(for: peer) != nil
+        if firstContact { MontanaP2PTrace.mark("call_first", "peer=\(String(peer.prefix(10))) -- not accepted yet, the ring knocks at the card") }
+        DispatchQueue.main.async { CallUIModel.shared.awaitingAccept = firstContact }
         self.isInitiator = true; self.pendingIce = []; self.sframeWrapped = []; self.frameCryptors = []
         self.iceHeldForPeerWord = true; self.restartAskedAt = .distantPast; self.setupAsks = 0; self.askedRelayOnly = false; self.lastIce = "new"; self.rebuiltInPlace = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in self?.releaseHeldIce("time") }
@@ -1775,7 +1862,7 @@ final class MontanaCall: NSObject {
         // THE END'S REASON BELONGS TO ONE CALL (23.09): it was written «only if unnamed» and never unnamed again, so
         // every call after the first in a process wore the first one's reason -- T1's own hang-ups of 18:36:13 and
         // 19:20:30 were summed as «peer-ended». Every birth of a call names it anew.
-        self.ended = false; self.endSignalSent = false; self.declinedByMe = false; self.answeredByMe = false; self.endReason = "-"; self.endDoor = "-"
+        self.ended = false; self.endSignalSent = false; self.declinedByMe = false; self.answeredByMe = false; self.answeredElsewhere = false; self.takenTold = false; self.endReason = "-"; self.endDoor = "-"
         self.cameraDeniedTold = false
         self.callSeed = montanaRandom(32)
         callGen += 1
@@ -2050,7 +2137,12 @@ final class MontanaCall: NSObject {
         // thread-safe on the call machine and touch neither the screen nor app state -- so they go
         // at once, while the paperwork (whom to answer, drop the deadlines, refresh the view)
         // stays on the main thread and arrives after.
-        if ctrl == "call-answer", let s = sdp, let pcx = pc, pcx.remoteDescription == nil, claimAnswerFast() {
+        // AN ANSWER IS TAKEN WHERE ONE IS AWAITED (11.10.2026, No.61): the role was the test, and a callee whose run came back
+        // into the call (rejoinHeldCall restores the callee's role) or rebuilt its transport in place offers anew and could never
+        // take the caller's answer -- the rejoin died on its own deadline. The fact is the signalling one: an offer of ours stands
+        // (have-local-offer) with no answer applied. And the answer is the peer's alone: a word of anybody else applies nothing.
+        if ctrl == "call-answer", from == peer, state != "idle", let s = sdp, let pcx = pc,
+           pcx.signalingState == .haveLocalOffer, pcx.remoteDescription == nil, claimAnswerFast(s.sdp) {
             MontanaP2PTrace.mark("sdp_in", "answer ms=\(Int(Date().timeIntervalSince(startedAt ?? Date())*1000)) bytes=\(s.sdp.count)")
             pcx.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: s.sdp)) { [weak self] err in
                 // SILENT-OK: the call machine is gone -- the call has ended, there is no one to report to.
@@ -2129,6 +2221,16 @@ final class MontanaCall: NSObject {
                     MontanaP2PTrace.mark("call_rejoin", "rx for no call held here state=\(state) — buried")
                 }
                 return
+            }
+            // THE GRAVEYARD IS ASKED WHERE THE CALL IS BORN (12.10.2026, the author's words 12:4x MSK: «on Nana's iPhone 17 the call
+            // comes and drops ... at 11:01 and 12:34, and even on 2193 the hole did not close»). The graveyard was asked at the door
+            // alone (handleSignal), on the arriving thread, before the hop to this one: Marusya's lane batch of 09:34:42.437Z carried
+            // copies of the offer beside the caller's end; a copy passed the door while the end still waited in this queue, the
+            // end buried the seed at 42.449, and the copy was born after it at 43.327 -- a ring of a call nobody held, answered at
+            // 46.518 into nothing. A seed this machine buried is a corpse here too, whatever road brought it and whenever it came.
+            if MontanaCall.isDeadSeed(callSeed) {
+                MontanaP2PTrace.mark("ring_dead", "seed=\(String((callSeed ?? "").prefix(8))) at=birth state=\(state)")
+                endPushPosted(); return
             }
             // MY OWN WORD, RETURNED (the author's word 12.09: «the system sent call-end itself —
             // inadmissible»; measured 07:34:56 and 07:48:31): the ring letter of this very call came
@@ -2245,8 +2347,12 @@ final class MontanaCall: NSObject {
             if from == peer, state == "outgoing" {
                 let mine = self.callSeed?.base64EncodedString() ?? ""
                 let theirs = callSeed ?? ""
-                if !theirs.isEmpty, !mine.isEmpty, theirs < mine {
-                    MontanaP2PTrace.mark("call_glare", "yield mine=\(String(mine.prefix(8))) theirs=\(String(theirs.prefix(8)))")
+                // A CALL BACK FROM A PHONE THAT RANG FOR OURS SUPERSEDES OURS (12.10.2026): a phone that said «ringing» for this
+                // call and calls now holds this call no more -- its system held the ring (ringHeld) or its ring ran out -- so the
+                // seeds' order would leave its call back unanswered half the time while ours rings into nobody.
+                let callBack = peerRinging
+                if !theirs.isEmpty, !mine.isEmpty, theirs < mine || callBack {
+                    MontanaP2PTrace.mark("call_glare", "yield mine=\(String(mine.prefix(8))) theirs=\(String(theirs.prefix(8))) back=\(callBack ? 1 : 0)")
                     endSignalSent = true    // fold silently — a call-end would kill the surviving call
                     startedAt = nil         // no «missed outgoing» letter: the talk continues as their call
                     endReason = "glare-yield"
@@ -2296,7 +2402,7 @@ final class MontanaCall: NSObject {
             self.peer = from; self.isVideo = video ?? false
             self.isInitiator = false; self.pendingIce = []; self.iceHeldForPeerWord = false; self.restartAskedAt = .distantPast; self.setupAsks = 0; self.askedRelayOnly = false; self.lastIce = "new"; self.rebuiltInPlace = false
             self.startedAt = Date(); self.connectedAt = nil; self.answeredAt = nil
-            self.ended = false; self.endSignalSent = false; self.declinedByMe = false; self.answeredByMe = false; self.endReason = "-"; self.endDoor = "-"
+            self.ended = false; self.endSignalSent = false; self.declinedByMe = false; self.answeredByMe = false; self.answeredElsewhere = false; self.takenTold = false; self.endReason = "-"; self.endDoor = "-"
             self.cameraDeniedTold = false
             if let s = sdp { self.pendingOffer = s }
             if self.pendingOffer == nil, let so = seedlessOffer, so.from == from,
@@ -2313,6 +2419,7 @@ final class MontanaCall: NSObject {
             callT0 = Date(); iceGenCount = 0; firstMediaLogged = false; firstVideoIn = false
             beginBackgroundHold()
             setState("incoming")
+            armRingLife(uuid: uuid, offerTs: ts)
             if self.pushPostedUUID == nil {
                 reportIncoming(uuid: uuid, from: from, video: self.isVideo)
             } else if self.isVideo, let u = self.callUUID {
@@ -2333,6 +2440,13 @@ final class MontanaCall: NSObject {
             if let s = sdp { adoptVideoFromOffer(s) }   // video is decided by the OFFER, not by an envelope flag
             prewarmIncoming()
         case "call-ringing":
+            // «RINGING» IS THE CALLED SIDE'S WORD (11.10.2026, No.61): one that reaches a callee was said by its own sibling --
+            // another device of the same seed shares the pipe and the lane and rings for the same call (iPhone 17 at 13:01:41Z
+            // heard Nana's iPad say it and played the ringback over its own ring). An idle machine holds no call to ring for.
+            guard isInitiator, state != "idle" else {
+                if state != "idle" { MontanaP2PTrace.markFolded("call_sibling", "ringing of a sibling -- not this call's word", window: 30) }
+                break
+            }
             guard !unreachable, from == peer else { break }
             tlog("received call-ringing (peer's phone is ringing)")
             peerRinging = true; reachTimer?.invalidate(); reachTimer = nil
@@ -2345,14 +2459,70 @@ final class MontanaCall: NSObject {
             DispatchQueue.main.async { CallUIModel.shared.peerRinging = true }
         case "call-answer":
             E2E.shared.callDebug("cer call-answer: from=\(MontanaConv.short(from)) state=\(state) hasPC=\(pc != nil) hasRemote=\(pc?.remoteDescription != nil) sdp=\(sdp?.sdp.count ?? -1)b")
+            // AN ANSWER IS THE CALLED SIDE'S WORD (11.10.2026, No.61): an idle machine holds no call -- an answer the caller's
+            // own sibling hears (T3 on T1's words) wrote «connecting» and a held device into a machine at rest. A callee that
+            // hears an answer heard its own sibling take the call: its ring ends in silence, answered elsewhere, as by
+            // «call-taken» -- whatever build the caller runs.
+            guard state != "idle" else { MontanaP2PTrace.markFolded("call_sibling", "answer to a machine at rest -- nothing", window: 30); return }
+            // THE SECOND CALLER ANSWERED BY ANOTHER DEVICE OF THIS PERSON (11.10.2026, No.61): this machine offered the second
+            // caller nothing, so an answer from them is a sibling's -- the second line ends here, answered elsewhere.
+            if let sf = secondFrom, from == sf { secondTakenElsewhere(by: "sibling-answer"); return }
+            // AN ANSWER IS TAKEN WHERE ONE IS AWAITED (11.10.2026, No.61): the role alone was the test, and a callee whose run came
+            // back into the call -- or rebuilt its transport in place -- offered anew and buried the caller's answer as a sibling's.
+            // This machine awaits an answer while an offer of its own stands (have-local-offer) or the fast path took one; the
+            // caller keeps its own roads for copies and late answers. A machine awaiting none heard its sibling take the call.
+            let awaits = isInitiator || answerFastAppliedNow || pc?.signalingState == .haveLocalOffer
+            guard awaits else {
+                if from == peer, !answeredByMe, state == "incoming" || state == "active" { ringTakenElsewhere(by: "sibling-answer") }
+                return
+            }
+            guard from == peer else {
+                MontanaP2PTrace.markFolded("call_answer_other", "an answer of nobody in this call -- nothing", window: 30)
+                return
+            }
+            // ONE PERSON, SEVERAL DEVICES, ONE ANSWER (11.10.2026, No.60): the first device that answers is the call; an answer
+            // of another device of the same person after it is no second call and moves nothing.
+            // AN ANSWER NAMING NO DEVICE IS NOT THE DEVICE THAT ANSWERED (11.10.2026, No.61): an older build's copy names none,
+            // and it wrote the held device back to empty -- every word after it went to all of the person's devices.
+            if let held = peerDevice, !held.isEmpty, device != held {
+                MontanaP2PTrace.mark("call_answer_other", "dev=\(device.prefix(6)) held=\(held.prefix(6))")
+                return
+            }
+            // THE DEVICE THAT IS THE CALL IS NAMED BY ITS CONNECTION (11.10.2026, No.61): once an answer was taken, every later
+            // answer was adopted as the call's device -- while the held device was still unnamed, another device's answer renamed
+            // the device that is the call, and every word after it went to the wrong phone. A later answer is the same
+            // connection's only when it is the taken answer or carries its certificate (its copy by the other road, naming the
+            // device a bare copy did not); any other moves nothing.
+            if let s = sdp, let taken = takenAnswerSdpNow ?? pc?.remoteDescription?.sdp, !Self.sameConnection(s.sdp, taken) {
+                MontanaP2PTrace.mark("call_answer_other", "dev=\(device.prefix(6)) another connection's answer -- moves nothing")
+                return
+            }
             if answeredAt == nil { answeredAt = Date() }   // the far hand answered: from here the road alone is on the clock
             guard let s = sdp else { return }
             releaseHeldIce("answer")   // a peer that never said «ringing» is surely born by its answer
             // The description is already handed to the machine by the fast path above; here -- paperwork only.
             if !answerFastAppliedNow {
-                guard pc?.remoteDescription == nil else { return }
+                guard pc?.remoteDescription == nil, takenAnswerSdpNow == nil else {
+                    // A COPY OF THE TAKEN ANSWER NAMES ITS DEVICE (11.10.2026, No.61): an older build answers by the wake road naming
+                    // no device and by the lane naming it; the copy of the same connection names the device the call holds.
+                    if peerDevice?.isEmpty ?? true, !device.isEmpty {
+                        self.peerDevice = device
+                        MontanaP2PTrace.mark("call_answer_device", "adopted dev=\(device.prefix(6)) from a copy of the taken answer")
+                    }
+                    return
+                }
             }
             self.peerDevice = device   // from now on we signal addressed to this device
+            // THE OTHER DEVICES OF THE PERSON STOP RINGING (11.10.2026, No.60): Nana's iPhone 17 and iPad 9 hold one seed; both
+            // rang, one answered, and the other rang on until its own end reached this phone and closed the live call. They
+            // are told which device took it; each other one ends its ring in silence, no end word back.
+            // THE CALLER'S WORD ALONE (11.10.2026, No.61): a callee that rejoined takes the caller's answer too, and the caller's
+            // devices ring for nothing -- there is nothing of theirs to stop.
+            if isInitiator, !device.isEmpty, !takenTold {
+                takenTold = true
+                var tk = CallSignalOut(ctrl: "call-taken"); tk.reason = device
+                sendSignal?(from, tk)
+            }
             reachTimer?.invalidate(); reachTimer = nil
             self.peerPremium = (caps?.tier == "ios-native" && caps?.sframe == true)
             self.learnPeerCaps(caps)
@@ -2360,9 +2530,15 @@ final class MontanaCall: NSObject {
             // hears the tone the whole attempt, so a silent "Connecting…" never reads as a freeze.
             DispatchQueue.main.async { CallUIModel.shared.connecting = true }
             if answerFastAppliedNow { return }   // the description is applied, the paperwork is done above
+            // ONE ANSWER PER CONNECTION ON THE SLOW ROAD TOO (11.10.2026, No.61): the claim is written before the description is
+            // applied, so a copy read while it is still being applied is judged against it above, never applied over it.
+            guard let pcx = pc, claimAnswer(s.sdp) else {
+                MontanaP2PTrace.mark("sdp_in", "answer-slow not applied pc=\(pc == nil ? 0 : 1) -- already taken or no connection")
+                return
+            }
             let rd = RTCSessionDescription(type: .answer, sdp: s.sdp)
             MontanaP2PTrace.mark("sdp_in", "answer-slow ms=\(Int(Date().timeIntervalSince(startedAt ?? Date())*1000)) bytes=\(s.sdp.count)")
-            pc?.setRemoteDescription(rd) { [weak self] err in
+            pcx.setRemoteDescription(rd) { [weak self] err in
                 guard let self else { return }
                 if let err {
                     // The peer's answer was refused — the connection can no longer happen by
@@ -2569,6 +2745,11 @@ final class MontanaCall: NSObject {
             // used to stay «reconnecting» until its own deadline, revived meanwhile by any byte on the path. The word
             // names the call's epoch on every road: a word about another call ends nothing.
             guard from == peer, state != "idle", let ep = callSeed, !ep.isEmpty, ep == callEpoch else { return }
+            // A GONE OF ANOTHER DEVICE OF THE PERSON ENDS NOTHING (12.10.2026): only the device this call holds speaks for it.
+            if let held = peerDevice, !held.isEmpty, !device.isEmpty, device != held {
+                MontanaP2PTrace.mark("call_gone", "rx of another device -- nothing")
+                return
+            }
             MontanaP2PTrace.mark("call_gone", "rx state=\(state) epoch=\(String(ep.prefix(8)))")
             if endReason == "-" { endReason = "peer-gone" }
             endCall(silent: true)
@@ -2585,6 +2766,14 @@ final class MontanaCall: NSObject {
                 return
             }
             guard peer == nil || from == peer else { return }   // a stranger cannot end the live call
+            // THE END OF ANOTHER DEVICE OF THE SAME PERSON ENDS NOTHING HERE (11.10.2026, No.60): once a device is the call, the
+            // ring timing out or declined on that person's other device is not this call's end.
+            // AN END NAMING NO DEVICE IS NOT THE END OF THE DEVICE THAT IS THE CALL (11.10.2026, No.61): the node rings every device
+            // of a person since 11.10, and an older build's sibling ends its ring naming none -- it tore down live calls.
+            if let held = peerDevice, !held.isEmpty, device != held {
+                MontanaP2PTrace.mark("call_end_other", "dev=\(device.prefix(6)) held=\(held.prefix(6)) state=\(state)")
+                return
+            }
             // AN END WORD AFTER THE END ENDS NOTHING (23.09): the peer's call-end rides every road, and the copies that
             // landed after our machine rested wrote «⑧ endCall -- teardown initiated» three times over an idle machine
             // (T1 18:34:52, 18:49:58, 18:55:02) and named the reason of the NEXT call. Only a ring a push raised still
@@ -2597,6 +2786,21 @@ final class MontanaCall: NSObject {
             MontanaP2PTrace.mark("call_end_rx", "state=\(state) connected=\(connectedAt == nil ? 0 : 1)")
             if endReason == "-" { endReason = "peer-ended" }   // the far hand or the far rule, not ours
             endCall(silent: true)
+        case "call-taken":
+            // ANOTHER DEVICE OF THIS PERSON TOOK THE CALL (11.10.2026, No.60): the ring here ends in silence -- the system's own
+            // reason, answered elsewhere; no end word goes back (it would close the call the other device holds), no missed call.
+            // THE SECOND LINE IS TAKEN ELSEWHERE TOO (11.10.2026, No.61): the word was read for the call in hand alone, and a
+            // second line another device of this person had taken rang on here until its own expiry. The second caller's word
+            // names the device that took their call under the second call's epoch.
+            if let sf = secondFrom, from == sf, let who = reason, !who.isEmpty {
+                guard who != MontanaCall.deviceWord(epoch: secondCallEpoch ?? "") else { break }
+                secondTakenElsewhere(by: "call-taken")
+                break
+            }
+            guard from == peer, !isInitiator, let who = reason, !who.isEmpty, !answeredByMe else { break }
+            guard who != MontanaCall.deviceWord(epoch: callEpoch ?? "") else { break }
+            guard state == "incoming" || state == "active" else { break }
+            ringTakenElsewhere(by: "call-taken")
         default: break
         }
     }
@@ -2637,6 +2841,7 @@ final class MontanaCall: NSObject {
 
     func acceptCall() {
         answeredByMe = true
+        ringLifeTimer?.invalidate(); ringLifeTimer = nil   // the hand took the ring: its life is the call's now (No.61)
         if answeredAt == nil {
             answeredAt = Date()
             MontanaP2PTrace.mark("call_accept", "ms=\(Int(Date().timeIntervalSince(startedAt ?? Date()) * 1000))")
@@ -2841,6 +3046,13 @@ final class MontanaCall: NSObject {
         if peerDevice == nil || peerDevice?.isEmpty == true {
             let fan = CallSignalOut(ctrl: "call-end")   // the peer device is unknown — fan-out
             sendSignal?(p, fan)
+        } else if isInitiator, answeredAt == nil, connectedAt == nil {
+            // THE PERSON'S OTHER DEVICES STILL RINGING HEAR THE CALLER'S END (11.10.2026, No.61): before an answer every device
+            // of the person rings for this call, and an end addressed to one of them left the others ringing. One unaddressed
+            // copy goes after it; after an answer the others stopped on «call-taken» or on the sibling's answer, and the
+            // addressed end is the whole farewell.
+            MontanaP2PTrace.mark("call_end_tx", "unaddressed copy -- ended before an answer, the person's other devices still ring")
+            sendSignal?(p, CallSignalOut(ctrl: "call-end"))
         }
     }
 
@@ -2852,7 +3064,9 @@ final class MontanaCall: NSObject {
     func endByHand(_ origin: String) {
         guard Thread.isMainThread else { DispatchQueue.main.async { self.endByHand(origin) }; return }
         guard state != "idle" else { return }
-        MontanaP2PTrace.mark("call_end_hand", "origin=\(origin) state=\(state) connected=\(connectedAt == nil ? 0 : 1) minimized=\(CallUIModel.shared.minimized ? 1 : 0)")
+        // HOW LONG AFTER THE BIRTH A HAND ENDED (12.10.2026, Nana 09:34:42.278Z: End 1.16 s after the dial from a row of the Calls
+        // list, whose lower rows lie where End stands): the next such end says whether a second touch of the dialling hand took it.
+        MontanaP2PTrace.mark("call_end_hand", "origin=\(origin) state=\(state) connected=\(connectedAt == nil ? 0 : 1) minimized=\(CallUIModel.shared.minimized ? 1 : 0) since_ms=\(Int(Date().timeIntervalSince(startedAt ?? Date()) * 1000))")
         // A Decline on our own ring is a decline even when the system's End transaction fails and the
         // teardown runs directly — it used to be set only inside the system's handler, and the direct
         // road logged the declined call as missed and raised the missed-call banner.
@@ -2870,6 +3084,22 @@ final class MontanaCall: NSObject {
         if endReason == "-" { endReason = why; endDoor = "rule:" + why }
         if why == "no-path" { Self.tellNoRoad(filtered: MontanaNetProbe.filtersCalls) }
         endCall(silent: false)
+    }
+
+    /// The held ring's end (ringRefused): no end word -- the caller's ring runs out as unanswered; «ringing» goes to the caller
+    /// under this call's name, so its knocks, its offer resends and its loud bell stop as for any phone that rings; the system
+    /// holds no such call, so nothing is reported to it. The person's own record is the missed row and banner (cleanup).
+    private func ringHeld(_ why: String) {
+        guard Thread.isMainThread else { DispatchQueue.main.async { self.ringHeld(why) }; return }
+        guard state != "idle", connectedAt == nil, let p = peer else { return }
+        MontanaP2PTrace.mark("ring_held", "why=\(why) state=\(state) told=ringing")
+        MontanaWakeDoor.note("held")
+        if endReason == "-" { endReason = why; endDoor = "rule:" + why }
+        var rs = CallSignalOut(ctrl: "call-ringing"); rs.targetDevice = peerDevice; rs.epoch = callEpoch
+        sendSignal?(p, rs)
+        endSignalSent = true
+        if let u = callUUID { endReportedUUID = u }
+        cleanup()
     }
 
     /// Who closed the call, in one word, when a hand closed it: our End and the system's End read here.
@@ -2953,6 +3183,13 @@ final class MontanaCall: NSObject {
         if let d = try? JSONEncoder().encode(deadSeeds) { _ = MontanaLocalVault.setEncrypted("callDeadSeeds", d) }
         deadSeedLock.unlock()
     }
+    /// A call THIS device held and ended, named by its epoch (the first sixteen letters of its seed): its seed lies here.
+    static func endedHere(epoch: String) -> Bool {
+        guard !epoch.isEmpty else { return false }
+        deadSeedLock.lock(); defer { deadSeedLock.unlock() }   // LOCK-OK: one read of the dead-seed set, loaded once from its record
+        deadLoadLocked()
+        return deadSeeds.keys.contains { $0.hasPrefix(epoch) }
+    }
     static func isDeadSeed(_ s: String?) -> Bool {
         guard let s, !s.isEmpty else { return false }
         deadSeedLock.lock(); defer { deadSeedLock.unlock() }
@@ -2998,13 +3235,16 @@ final class MontanaCall: NSObject {
         endReportedUUID = nil
         let teardownStart = Date()
         let talkDur = connectedAt != nil ? Date().timeIntervalSince(connectedAt!) : 0
+        if connectedAt != nil { Task { @MainActor in MTCoinTell.callEnded() } }   // the call's last balance, told once at its end
         tlog("⑨ cleanup start — talk \(String(format: "%.1f", talkDur))s")
         // call log before reset
         if let p = peer, let started = startedAt {
             let incoming = !isInitiator
             // «Missed» means the person never reacted. Answering a call whose offer then
             // failed to arrive is not a miss — the red banner over an answered call lied.
-            let missed = connectedAt == nil && !(incoming && answeredByMe)
+            // A RING ANSWERED ON ANOTHER DEVICE IS NO MISS (11.10.2026, No.61): the person took the call on another device of
+            // theirs, and this one wrote a missed row and raised the missed banner (one value feeds both, onCallLog).
+            let missed = connectedAt == nil && !(incoming && (answeredByMe || answeredElsewhere))
             let dur = connectedAt != nil ? Int(Date().timeIntervalSince(connectedAt!)) : 0
             _ = started
             let v = videoFramesSeen   // 15.7: the record names a picture that flowed, not a flag
@@ -3072,6 +3312,7 @@ final class MontanaCall: NSObject {
         pathFloor = Self.modestStep; ladderStep = Self.modestStep; sumTunnelSamples = 0   // the next call proves its own pair
         stopRingback(); stopDialTone(); stopWaitingTone(); tonePlayer?.stop(); tonePlayer = nil; speech.stopSpeaking(at: .immediate)
         connectHardTimer?.invalidate(); connectHardTimer = nil
+        ringLifeTimer?.invalidate(); ringLifeTimer = nil
         reconnectTimer?.invalidate(); reconnectTimer = nil
         disconnectGrace?.invalidate(); disconnectGrace = nil; iceHeldForPeerWord = false; restartAskedAt = .distantPast; setupAsks = 0; askedRelayOnly = false; lastIce = "new"; rebuiltInPlace = false
         answerResendTimer?.invalidate(); answerResendTimer = nil; answerResends = 0
@@ -4174,16 +4415,36 @@ final class MontanaCall: NSObject {
     }
 
     private func resetSignalFlags() {
-        signalLock.lock(); answerFastApplied = false; remoteIceSeen = false; signalLock.unlock()
+        signalLock.lock(); answerFastApplied = false; takenAnswerSdp = nil; remoteIceSeen = false; signalLock.unlock()
     }
     private var answerFastAppliedNow: Bool { signalLock.lock(); defer { signalLock.unlock() }; return answerFastApplied }
+    /// THE ANSWER THE CONNECTION TOOK (11.10.2026, No.61): written by the one road that applies it (the fast path or the slow
+    /// one), at the claim, before the description is applied -- so a second answer read while the first is still being applied
+    /// is judged against it, never applied over it.
+    private var takenAnswerSdp: String?
+    private var takenAnswerSdpNow: String? { signalLock.lock(); defer { signalLock.unlock() }; return takenAnswerSdp }
+    /// The slow road's claim: one answer per connection, whichever road saw it first.
+    private func claimAnswer(_ sdp: String) -> Bool {
+        signalLock.lock(); defer { signalLock.unlock() }
+        if takenAnswerSdp != nil { return false }
+        takenAnswerSdp = sdp
+        return true
+    }
+    /// THE SAME CONNECTION (11.10.2026, No.61): the taken answer itself, or one carrying its certificate. An unreadable
+    /// certificate proves nothing -- a reading that failed is never taken for the same connection.
+    private static func sameConnection(_ a: String, _ b: String) -> Bool {
+        if a == b { return true }
+        guard let fa = fingerprint(a) else { return false }
+        return fa == fingerprint(b)
+    }
     private func markRemoteIceSeen() { signalLock.lock(); remoteIceSeen = true; signalLock.unlock() }
     private var remoteIceSeenNow: Bool { signalLock.lock(); defer { signalLock.unlock() }; return remoteIceSeen }
     /// K-1: one winner applies the answer, whichever thread saw it first.
-    private func claimAnswerFast() -> Bool {
+    private func claimAnswerFast(_ sdp: String) -> Bool {
         signalLock.lock(); defer { signalLock.unlock() }
-        if answerFastApplied { return false }
+        if answerFastApplied || takenAnswerSdp != nil { return false }
         answerFastApplied = true
+        takenAnswerSdp = sdp
         return true
     }
     private func stashIce(_ c: RTCIceCandidate) { signalLock.lock(); pendingIce.append(c); signalLock.unlock() }
@@ -4225,11 +4486,74 @@ final class MontanaCall: NSObject {
     /// signal is stamped with it; a foreign or old epoch is dropped on receipt, so a new call is not
     /// poisoned by the corpse of the previous one from the node queue (a class the server model did
     var callEpoch: String? { callSeed.map { String($0.base64EncodedString().prefix(16)) } }
+    /// THIS DEVICE'S WORD IN ONE CALL (11.10.2026, No.60): one person on several devices answers one call on one of them, and
+    /// every call word says which device spoke and which it is for. The word is the call's own -- the device's tag and this
+    /// app under the call's epoch -- so a correspondent tells the devices apart within a call and links nothing across calls.
+    /// NO WORD RATHER THAN A FALSE ONE (11.10.2026, No.61): the tag reads «ios-pending», uncached, while the seed or the platform
+    /// value is momentarily absent, so a word hashed from it changed in the middle of a call; an empty word is the shape of a
+    /// build before No.60, which every receiver already reads.
+    nonisolated static func deviceWord(epoch: String) -> String {
+        guard !epoch.isEmpty else { return "" }
+        let tag = E2E.deviceTag()
+        guard tag != "ios-pending" else {
+            MontanaP2PTrace.markFolded("call_device", "tag pending -- no device word", window: 60)
+            return ""
+        }
+        var m = Data("mt-call-device".utf8); m.append(0)
+        m.append(contentsOf: (Bundle.main.bundleIdentifier ?? "").utf8); m.append(0)
+        m.append(contentsOf: tag.utf8); m.append(0)
+        m.append(contentsOf: epoch.utf8)
+        return SHA256.hash(data: m).prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// THE RING ENDS IN SILENCE, ANSWERED ELSEWHERE (11.10.2026, No.60/No.61): the system's own reason, no end word back (it
+    /// would close the call the other device holds), no missed call. One road for the caller's «call-taken» and for the
+    /// sibling's answer heard on the shared pipe.
+    private func ringTakenElsewhere(by why: String) {
+        MontanaP2PTrace.mark("call_taken_elsewhere", "state=\(state) by=\(why)")
+        answeredElsewhere = true
+        endSignalSent = true
+        if endReason == "-" { endReason = "answered-elsewhere" }
+        if let uuid = callUUID {
+            provider.reportCall(with: uuid, endedAt: nil, reason: .answeredElsewhere)
+            endReportedUUID = uuid
+        }
+        cleanup()
+    }
+
+    /// THE WAKE ANSWER'S CALL (11.10.2026, No.61): the wake road carries an answer to every device of the caller's seed, and
+    /// the push door took it for whatever call the machine held -- an answer to a call of this person's other device rang
+    /// here as a second line and went into this machine's own call. An answer belongs here only when its seed names the call
+    /// in hand and it comes from that call's peer.
+    func holdsCall(seed: String?, from: String) -> Bool {
+        guard state != "idle", !from.isEmpty, from == peer, let s = seed, !s.isEmpty, let mine = callEpoch, !mine.isEmpty else { return false }
+        return String(s.prefix(16)) == mine
+    }
 
     /// THE LIFE OF A CALL IS ONE NUMBER (13.09, the author's word): the caller rings this long,
     /// the node keeps the voip wake alive this long, the callee refuses an offer older than this,
     /// a delivered push older than this is dead. Four gates, one value — they cannot drift apart.
     static let callLifeS: TimeInterval = 90
+
+    /// AN INCOMING RING LIVES ONE CALL'S LIFE (11.10.2026, No.61): a ring the push raised ends itself only while the machine has
+    /// not taken it over, and the hard timeout is armed at an answer -- a ring the machine adopted had no end of its own. A
+    /// device of the person whose lane missed both the caller's end and «call-taken» rang on for as long as nobody touched it.
+    /// The ring carries the call's one life from the offer's moment on the node's clock (from now when the word carried no
+    /// moment) and ends, if it still rings, as unanswered by rule: no end word goes back -- the caller's own life is spent by
+    /// then, and an end from this device could close the call another device of this person holds.
+    private func armRingLife(uuid: UUID, offerTs: Int?) {
+        let age = offerTs.map { max(0, MontanaWakePush.nodeNow() - Double($0) / 1000) } ?? 0
+        let left = max(1, MontanaCall.callLifeS - age)
+        MontanaP2PTrace.mark("ring_life", "armed left_s=\(Int(left)) from=\(offerTs == nil ? "now" : "offer")")
+        ringLifeTimer?.invalidate()
+        ringLifeTimer = callTimer(left, repeats: false) { [weak self] _ in
+            guard let self, self.callUUID == uuid, self.state == "incoming", !self.answeredByMe, !self.ended else { return }
+            self.ringLifeTimer = nil
+            MontanaP2PTrace.mark("call_end_rule", "why=ring-life state=\(self.state) left_s=\(Int(left))")
+            if self.endReason == "-" { self.endReason = "ring-life"; self.endDoor = "rule:ring-life" }
+            self.endCall(silent: true)   // silent: the system hears «unanswered», the caller hears nothing (see above)
+        }
+    }
 
     private func armHardTimeout() {
         DispatchQueue.main.async { self.startRouteWatch() }
@@ -4413,9 +4737,13 @@ final class MontanaCall: NSObject {
         if born { DispatchQueue.main.async { VoicePlayer.shared.yieldToCall() } }   // the call holds the sound from its birth (24.09)
         if born || s == "idle" { MontanaAudioRoute.read(born ? "call born" : "call idle") }
         DispatchQueue.main.async {
+            // THE CALL HAS ONE CONNECTED MOMENT, SET BEFORE THE SCREEN HEARS THE STATE (the author's words 12.10.2026 13:4x MSK, No.65:
+            // «the status hangs as calling while we talk and the seconds do not run, and after reconnections the duration must go on,
+            // not start anew»; «one source of truth»): the screen's clock is this moment, never a copy of its own.
+            let first = s == "connected" && self.connectedAt == nil
+            if first { self.connectedAt = Date() }
             self.onStateChange?(s, self.peer)
-            if s == "connected", self.connectedAt == nil {
-                self.connectedAt = Date()
+            if first {
                 Task { @MainActor in MTMintBeat.run() }   // both sides mint the talk (MTCallMint, 07.10.2026)
                 self.powerStart = MontanaPower.snapshot()   // every call, a voice call too: the ladder's tick ran only for video
                 self.pictureSeen = [:]
@@ -4465,16 +4793,64 @@ final class MontanaCall: NSObject {
 
 
     func reportIncoming(uuid: UUID, from: String, video: Bool, done: (() -> Void)? = nil) {
-        nativeHandle = MontanaCallHandle.token(for: from)   // the token is born BEFORE the first showing to the system
+        // THE CALL IN HAND KEEPS ITS OWN TOKEN (12.10.2026): a second line's or a dummy's report wrote its token over the token of
+        // the call in hand, and that call's next stamp (stampNativeName) named the other caller's token in Recents. The token is
+        // born BEFORE the first showing to the system, and only the call in hand takes it as its own.
+        let tok = MontanaCallHandle.token(for: from)
+        if uuid == callUUID { nativeHandle = tok }
         let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: nativeHandle)   // a one-time token, not the conversation link
+        update.remoteHandle = CXHandle(type: .generic, value: tok)   // a one-time token, not the conversation link
         update.localizedCallerName = callerName(from)
         update.hasVideo = video
         update.supportsHolding = true   // 12.3: Hold & Accept lives beside End & Accept
-        reportedCalls.insert(uuid)   // the system's list now holds a call of ours (sweepSystemCalls)
-        provider.reportNewIncomingCall(with: uuid, update: update) { err in
+        let first = reportedCalls.insert(uuid).inserted   // the system's list now holds a call of ours (sweepSystemCalls)
+        provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] err in
             if let err = err { E2ELog.write("call: reportIncoming err \(err)"); E2E.shared.callDebug("‼️ reportIncoming ERR \(err.localizedDescription)") }
+            // Only the birth report's refusal ends anything: a standing call reported again for a later push is the system's already.
+            if first, let err, (err as? CXErrorCodeIncomingCallError)?.code != .callUUIDAlreadyExists {
+                DispatchQueue.main.async { self?.ringRefused(uuid, err, from: from, token: tok) }
+            }
             if let done { DispatchQueue.main.async(execute: done) }   // what must follow the report waits for it (25.09)
+        }
+    }
+    /// A RING THE SYSTEM REFUSED ENDS BY RULE (11.10.2026, No.61): a refused report (Focus, the block list) was only written to
+    /// the log -- the machine held an incoming call nobody could see or answer, the caller rang into it for the call's whole
+    /// life, and the next call to this phone was refused as busy. The call the refusal names ends by rule and the caller is
+    /// told; a refused second line is declined to its caller; a ring the push raised before the machine took it ends on top.
+    /// Only a birth report counts, and «already exists» is no refusal: a standing call reported again for a later push.
+    /// A RING THE SYSTEM HOLDS IS A CALL MISSED, NEVER A CALL DECLINED (12.10.2026, the author's words 11:5x MSK: «an attempt to
+    /// call T1, and it says it drops»; 12:09 MSK: «this call is not seen natively in my recent calls, and it must not be like an
+    /// error -- a missed call, shown as a native cellular call that came through»). Focus refuses the report: the call reached the
+    /// phone and the person asked not to be disturbed. The rule of No.61 ended it with a bare end word, and the caller read a
+    /// hang-up (T1 07:52:11Z and 07:52:22Z: ring_refused why=ring-refused-focus 65-251 ms after the push, call_end_rule, the
+    /// caller's missed letter back within the second). A held ring now ends here in silence, as unanswered: the caller hears
+    /// «ringing» and rings out to no answer, as a cellular caller does; the person gets the missed row and the missed banner (the
+    /// system writes no Recents line for a report it refused: «the incoming call has been disallowed by the system and will not be
+    /// displayed», CXProvider.h); the token stays with the conversation for the repeat Focus lets through (MontanaCallHandle).
+    private func ringRefused(_ uuid: UUID, _ err: Error, from: String, token: String) {
+        let code = (err as? CXErrorCodeIncomingCallError)?.code
+        if code == .filteredByDoNotDisturb {
+            MontanaCallHandle.held(conv: from, token: token)
+            if uuid == callUUID, state != "idle", connectedAt == nil {
+                ringHeld("ring-held-focus")
+            } else if uuid == secondUUID {
+                secondHeld("ring-held-focus")
+            } else if uuid == pushPostedUUID {
+                MontanaP2PTrace.mark("ring_held", "why=ring-held-focus push-raised")
+                endPushPosted()
+            }
+            return
+        }
+        let why = code == .filteredByDoNotDisturb ? "ring-refused-focus" : (code == .filteredByBlockList ? "ring-refused-blocklist" : "ring-refused-callkit")
+        if uuid == callUUID, state != "idle", connectedAt == nil {
+            MontanaP2PTrace.mark("ring_refused", "why=\(why) state=\(state)")
+            endByRule(why)
+        } else if uuid == secondUUID {
+            MontanaP2PTrace.mark("ring_refused", "why=\(why) second-line")
+            declineSecond()
+        } else if uuid == pushPostedUUID {
+            MontanaP2PTrace.mark("ring_refused", "why=\(why) push-raised")
+            endPushPosted()
         }
     }
 
@@ -4866,7 +5242,15 @@ extension MontanaCall: CXProviderDelegate {
             guard self.audioUnitPending, (!self.isVideo || self.videoReady) else { return }
             self.audioUnitPending = false
             let t0 = Date()
-            RTCAudioSession.sharedInstance().isAudioEnabled = true
+            // A SESSION THE SYSTEM TAKES OVER RESTARTS THE AUDIO NODE (10.10.2026, T1 to a correspondent 11:02Z, the author: «I did not
+            // hear her and the call broke»). The outgoing call's activation came six seconds late, after the ringback's own
+            // activation had raised the node; the system's takeover stopped the running node, and «enabled», already true, set
+            // again changed nothing -- the microphone sent 8314 bytes and then nothing, her voice arrived and was never played.
+            // An enabled node is lowered and raised again, so it runs on the session the system has just handed over.
+            let session = RTCAudioSession.sharedInstance()
+            let restarted = session.isAudioEnabled
+            if restarted { session.isAudioEnabled = false }
+            session.isAudioEnabled = true
             if self.speakerOn, !MontanaAudioRoute.isExternal {
                 let s = RTCAudioSession.sharedInstance()
                 s.lockForConfiguration()
@@ -4874,7 +5258,7 @@ extension MontanaCall: CXProviderDelegate {
                 catch { E2ELog.write("call: speaker route err \(error)") }
                 s.unlockForConfiguration()
             }
-            MontanaP2PTrace.mark("audio_on", "ms=\(Int(Date().timeIntervalSince(t0)*1000)) after=\(ev.rawValue)")
+            MontanaP2PTrace.mark("audio_on", "ms=\(Int(Date().timeIntervalSince(t0)*1000)) after=\(ev.rawValue) restarted=\(restarted ? 1 : 0)")
             DispatchQueue.main.async { self.autoSpeakerOnVideo() }   // the audio node rose: the video call's loudspeaker is decided now
         }
     }
@@ -5463,6 +5847,7 @@ final class CallUIModel: ObservableObject {
     var foldedLive: Bool { minimized && state != "idle" && state != "incoming" }
     @Published var peerRinging: Bool = false
     @Published var connecting: Bool = false   // outgoing: answer received, ICE in progress -> "Connecting…"
+    @Published var awaitingAccept: Bool = false   // outgoing to a pair in first contact: the contact has not accepted yet (No.63)
     @Published var signal: Int = 2            // the light before the call's name: 2 green, 1 yellow, 0 red
     @Published var powerSaving = false        // the light wears the battery: the power floor holds the picture down
     @Published var cameraOff = false { didSet { applyCovers("camera") } }   // my camera muted inside a video call (the Video button face)
@@ -5512,6 +5897,9 @@ final class CallUIModel: ObservableObject {
     /// marks, touching neither, on any device and any system): the row's bottom in window coordinates,
     /// written by the row itself as it is laid out.
     @Published var topRowBottom: CGFloat = 0
+    /// The back mark's own rectangle in window coordinates, written by the mark as it is laid out: the switch hands a touch
+    /// inside it to the mark (CallOverlayView.switchTapped). Not published -- nothing is drawn from it.
+    var backMarkRect: CGRect = .zero
     /// THE BUTTONS STEP ASIDE BY TAP OR BY TIME, ONE OWNER (the author's word 21.09 and 29.09): on a video call the
     /// picture is the switch -- a tap hides the buttons, the next tap brings them back -- and while the pictures
     /// flow (the call connected, no screen riding, no question standing) the buttons fold by themselves six
@@ -5740,14 +6128,19 @@ enum MontanaCallWiring {
                                                      text: missedCallMark + json, silent: rang || refused)
             }
         }
-        c.onStateChange = { state, peer in
+        c.onStateChange = { _, peer in
             DispatchQueue.main.async {
                 let m = CallUIModel.shared
-                let was = m.state
+                // ONE STATE AND ONE MOMENT ON THE SCREEN (the author's words 12.10.2026 13:4x MSK, No.65, «one source of truth»). T1's
+                // call to Ilya, 10:34:48Z: the machine connected and counted 697 s while the screen stood twelve minutes on «Calling...»
+                // -- it showed a state handed over as a snapshot two hops earlier, and its clock was a copy of its own restarted at every
+                // connect. The screen shows the machine's state as it stands when this runs, and its clock is the machine's one
+                // connected moment, kept across a reconnect and a rejoin.
+                let state = MontanaCall.stateSnapshot
                 m.state = state; m.peer = peer; m.video = MontanaCall.shared.isVideo; m.tick += 1
-                if state == "connected" && was != "connected" { m.startTimer() }
+                if state == "connected" { m.startedAt = MontanaCall.shared.connectedAt ?? m.startedAt ?? Date() }
                 if state == "idle" { m.stopTimer(); m.fold(false, why: "idle"); m.muted = false; m.speaker = false; m.miniCorner = 1
-                    m.peerRinging = false; m.connecting = false; m.peerImage = nil }
+                    m.peerRinging = false; m.connecting = false; m.awaitingAccept = false; m.peerImage = nil }
                 else if let p = peer { loadPeerImage(p) }
                 if state == "connected" { m.connecting = false }
                 CallWindowPresenter.shared.update()
@@ -5811,7 +6204,8 @@ enum MontanaCallWiring {
         let name = MontanaCall.shared.callerName(peer)
         let final = MontanaMissedCall.content(peer: peer, name: name, video: video)
         UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: "missed-\(peer)-\(Int(Date().timeIntervalSince1970))", content: final, trigger: nil))
+            // The notice's own name is its token too (MontanaMissedCall.noticeToken): the system keeps request names as well.
+            identifier: "missed-" + ((final.userInfo["call_token"] as? String) ?? UUID().uuidString), content: final, trigger: nil))
         MontanaLog.event("MISSED banner posted \(peer.prefix(10)) seed=\(String((seed ?? "").prefix(8)))")
     }
 }
@@ -6517,7 +6911,7 @@ struct CallOverlayView: View {
         switch model.state {
         case "connected": return ""   // the duration is a live label, not a string — see callDuration
         case "active", "reconnecting": return "Connecting…"
-        case "outgoing": return model.connecting ? "Connecting…" : (model.peerRinging ? "Ringing…" : "Calling…")
+        case "outgoing": return model.connecting ? "Connecting…" : (model.peerRinging ? "Ringing…" : (model.awaitingAccept ? "Waiting for the contact to accept" : "Calling…"))
         default: return ""
         }
     }
@@ -6578,6 +6972,45 @@ struct CallOverlayView: View {
         }
     }
 
+    /// THE FOLD BY A SWIPE DOWN, ON THE LAYER THAT TAKES THE FINGER ON EVERY SYSTEM (the author's word 11.10.2026 18:5x MSK: «what
+    /// works for me must work the same for everyone, on any device, system and hardware»). Margarita's iPhone 13 on iOS 18.1.1,
+    /// 15:40:39-15:40:57Z: thirty touches of a video call reached the picture's switch (call_chrome, shown and hidden by tap) and not
+    /// one reached the back mark. The switch's layer takes the finger on iOS 17, 18 and 26 (the 29.09 construction), so it carries
+    /// the fold too: a swipe down folds the call by the back mark's own road; a voice call's ground carries the same.
+    private var foldBySwipe: some Gesture {
+        DragGesture(minimumDistance: 24).onEnded { v in
+            guard 80 < v.translation.height, abs(v.translation.width) < v.translation.height else { return }
+            MontanaP2PTrace.mark("call_swipe", "fold dy=" + String(Int(v.translation.height)))
+            if !MTCallFloat.shared.foldAway(why: "swipe") { model.fold(true, why: "swipe") }
+        }
+    }
+    /// THE ARROW'S ROOM IS THE ARROW'S ON EVERY SYSTEM (12.10.2026, the author's word 12:3x MSK: «the fold of the call by the arrow
+    /// does not work and does not press for everyone»; Marusya's iPhone 13 Pro Max on iOS 18.1.1 at 08:00:44Z: four taps 0.17-0.35 s
+    /// apart all toggled the buttons -- hidden, shown, hidden, shown -- and not one reached the mark). The switch knows where the
+    /// back mark stands (backMarkRect, written by the mark itself): a touch inside it, or within eight points of it, is the mark's
+    /// and folds the call by the mark's own road, whatever took the finger. Every other touch toggles the buttons, and the diary
+    /// says where it landed.
+    private func switchTapped(at p: CGPoint) {
+        if chromeVisible, 0 < model.backMarkRect.width, model.backMarkRect.insetBy(dx: -8, dy: -8).contains(p) {
+            MontanaP2PTrace.mark("call_chrome", "tap at the back mark y=\(Int(p.y)) -- folded by the mark's road")
+            if !MTCallFloat.shared.foldAway(why: "back") { model.fold(true, why: "back") }
+            return
+        }
+        model.chromeHidden.toggle()
+        MontanaP2PTrace.mark("call_chrome", (model.chromeHidden ? "hidden by tap" : "shown by tap") + " y=\(Int(p.y))")
+    }
+    /// The room the switch leaves above itself while the marks stand: down to the top row's measured bottom edge, or the row's own
+    /// height before it is measured.
+    private func switchTop(in g: GeometryProxy) -> CGFloat {
+        guard chromeVisible else { return 0 }
+        let edge = 0 < model.topRowBottom ? model.topRowBottom : MTScene.safeInsets().top + MontanaCallMark.topPad + montanaTouchTarget
+        return max(0, edge - g.frame(in: .global).minY)
+    }
+    /// The room the switch leaves under itself while the marks stand: up from the buttons' measured top edge.
+    private func switchBottom(in g: GeometryProxy) -> CGFloat {
+        guard chromeVisible, 0 < model.buttonsTop else { return 0 }
+        return max(0, g.frame(in: .global).maxY - model.buttonsTop)
+    }
     var minimizedPill: some View { CallOverlayView.pillBody(model: model) }
     static func pillBody(model: CallUIModel) -> some View {
         HStack(spacing: 8) {
@@ -6652,8 +7085,17 @@ struct CallOverlayView: View {
                         // call_chrome line, while the back mark standing in the same stack folded the call at
                         // 14:35:32 on 27.09), and fired on every 18 and later. A sibling in the stack is hit-tested
                         // by the drawn tree alone, the way the marks and the buttons are, on every system.
+                        // THE SWITCH NEVER LIES UNDER A MARK (the author's word 11.10.2026 20:2x MSK: «and the button to fold the call
+                        // too»): on Margarita's iPhone 13, iOS 18.1.1 (2185), thirty touches on the back mark 15:40:39-15:40:57Z all
+                        // reached this layer (call_chrome shown/hidden by tap) and none the mark above it -- that system let the tap of
+                        // the layer under a Button win. While the marks stand, the switch covers only the picture between the top row
+                        // and the buttons, so no touch on a mark has a second taker on any system; with the marks away it is the whole
+                        // picture again.
                         Color.clear.contentShape(Rectangle())
-                            .onTapGesture { model.chromeHidden.toggle(); MontanaP2PTrace.mark("call_chrome", model.chromeHidden ? "hidden by tap" : "shown by tap") }
+                            .gesture(SpatialTapGesture(coordinateSpace: .global).onEnded { v in switchTapped(at: v.location) })
+                            .simultaneousGesture(foldBySwipe)
+                            .padding(.top, switchTop(in: geo))
+                            .padding(.bottom, switchBottom(in: geo))
                         MTCallShade()
                         MTCallMini(screen: geo.size,
                                    safeTop: MTScene.safeInsets().top,
@@ -6663,8 +7105,12 @@ struct CallOverlayView: View {
                 .ignoresSafeArea()
                 .onAppear { MontanaP2PTrace.mark("call_screen", "branch=video model=\(model.video ? 1 : 0) machine=\(MontanaCall.shared.isVideo ? 1 : 0)") }
             } else {
-                // The voice call stands on the same ground (callGround above): the face and the wash.
-                Color.clear
+                // The voice call stands on the same ground (callGround above): the face and the wash; a swipe down on it folds.
+                // Its layer, too, never lies under a mark or a button.
+                Color.clear.contentShape(Rectangle())
+                    .simultaneousGesture(foldBySwipe)
+                    .padding(.top, switchTop(in: screen))
+                    .padding(.bottom, switchBottom(in: screen))
                     .onAppear { MontanaP2PTrace.mark("call_screen", "branch=audio model=\(model.video ? 1 : 0) machine=\(MontanaCall.shared.isVideo ? 1 : 0)") }
             }
             if model.screenSharing || model.peerSharing {
@@ -6706,6 +7152,7 @@ struct CallOverlayView: View {
                     MontanaCallMark(glyph: "chevron.down", label: "Back") {
                         if !MTCallFloat.shared.foldAway(why: "back") { model.fold(true, why: "back") }
                     }
+                    .modifier(MTCallEdge { f in if model.backMarkRect != f { model.backMarkRect = f } })   // switchTapped reads it
                     // THE MASK'S TWIN ROOM (checklist 36): the mask stands beside the camera flip on the right, and an
                     // empty room of the same size here keeps the name in the centre of the row.
                     if videoBranch {
@@ -6864,6 +7311,7 @@ struct CallOverlayView: View {
                         .font(.system(size: m.side * 0.34, weight: .semibold))
                         .foregroundColor(model.screenSharing ? .black : MontanaOctagon.barGlyph)
                         .montanaOctagonFace(square: true, bar: true, height: m.side, tint: model.screenSharing ? .white : nil)
+                        .id(model.screenSharing)   // a plate is born for its state (routeBtn); the picker above it is not reborn
                         .overlay(MTBroadcastPickerButton().frame(width: m.side, height: m.side))
                     Text(LocalizedStringKey("Broadcast")).font(.subheadline).foregroundColor(.white)
                         .lineLimit(1).minimumScaleFactor(0.7)
@@ -6973,13 +7421,20 @@ struct CallOverlayView: View {
                 // buttons answer; the route menu is the platform's own and answers by itself.
                 if !f.menu {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    MontanaCall.shared.speakerFromUI(!model.speaker)
+                    // THE PRESS READS WHERE THE SOUND IS (12.10.2026, the author's word 12:3x MSK: «the speaker button does not
+                    // change, it is on all the time»): the plate and the press read one fact, the route the system holds
+                    // (MontanaAudioRoute.face), never a second store of the wish that could disagree with what the plate shows.
+                    MontanaCall.shared.speakerFromUI(!f.lit)
                 }
             } label: {
                 Image(systemName: f.icon).font(.system(size: side * 0.34, weight: .semibold))
                     .foregroundColor(f.lit ? .black : MontanaOctagon.barGlyph)
             }
             .buttonStyle(.montanaOctagon(square: true, bar: true, height: side, tint: f.lit ? .white : nil))
+            // A PLATE IS BORN FOR ITS STATE (12.10.2026): T1's call at 12:30 MSK moved the sound at each of five presses (audio_route
+            // Receiver/Speaker after every touch) while the author saw the plate lit throughout. The lit plate and the dark plate are
+            // two faces, each drawn anew for its state -- the glass is never asked to give its tint back in place.
+            .id(f.lit)
             .overlay(alignment: .top) { if f.menu { MontanaRoutePicker().frame(width: side, height: side) } }
             Text(LocalizedStringKey(f.caption))
                 .font(.subheadline).foregroundColor(.white).lineLimit(1).minimumScaleFactor(0.7)
@@ -6995,6 +7450,7 @@ struct CallOverlayView: View {
                     .foregroundColor(tint != nil ? .white : (active ? activeGlyph : MontanaOctagon.barGlyph))
             }
             .buttonStyle(.montanaOctagon(square: true, bar: true, height: side, tint: active ? .white : tint))
+            .id(active)   // a plate is born for its state, as the audio plate (routeBtn)
             // Every column the same width and a one-line caption — the grid stays straight
             // whatever the words weigh.
             Text(LocalizedStringKey(caption)).font(.subheadline).foregroundColor(.white)
@@ -7281,7 +7737,11 @@ enum MontanaAudioRoute {
         DispatchQueue.main.async {   // the detector and the screen's model are the main thread's; a route change is told on any thread
             CallUIModel.shared.audioExternal = (out == .external)
             let f = face()
-            if CallUIModel.shared.route != f { CallUIModel.shared.route = f }
+            if CallUIModel.shared.route != f {
+                CallUIModel.shared.route = f
+                // The plate's own state in the diary (12.10.2026): the next «the button stays lit» is read, not argued.
+                MontanaP2PTrace.markChanged("call_face", "audio lit=\(f.lit ? 1 : 0) menu=\(f.menu ? 1 : 0)")
+            }
             let w = Way.shared
             if w.glyph != wayGlyph { w.glyph = wayGlyph }
             if w.outside != (device != nil) { w.outside = device != nil }
@@ -7479,5 +7939,46 @@ enum MTProximity {
     }
     private static func note(_ what: String, _ why: String) {
         MontanaP2PTrace.mark("proximity", "\(what) by=\(why) holders=\(holders.sorted().joined(separator: ","))")
+    }
+}
+
+/// THE RELAY'S TLS IS JUDGED BY THE SYSTEM'S OWN TRUST (10.10.2026, measured). The engine checks a relay's certificate against
+/// the roots compiled into it, and the root our relays' certificates chain to is not among them: 411 of 411 TLS relay gatherings
+/// across the fleet since 07.10 ended «701 Failed to establish connection», so a network that lets only TLS through left a call
+/// without any relay. The same request on the Mac with the same engine: no relay candidate under the engine's own check, two
+/// under the system's. Nothing is waived: iOS checks the chain and the name, and the names are the TLS relays of the passes
+/// this phone was handed by its nodes.
+final class MTRelayTrust: NSObject, RTCSSLCertificateVerifier {
+    static let shared = MTRelayTrust()
+    private static let lock = NSLock()
+    private static var names: Set<String> = []   // BOUND-OK: the TLS relay names of the passes this launch was handed
+    /// The TLS relays of a pass: «turns:host:port?transport=tcp» names «host»; a relay named by an IPv6 address has no name to check.
+    static func learn(_ uris: [String]) {
+        let hosts: [String] = uris.compactMap { u in
+            guard u.hasPrefix("turns:") else { return nil }
+            let authority = u.dropFirst("turns:".count).split(separator: "?").first.map(String.init) ?? ""
+            guard !authority.isEmpty, !authority.hasPrefix("[") else { return nil }
+            let host = authority.split(separator: ":").first.map(String.init) ?? ""
+            return host.isEmpty ? nil : host.lowercased()
+        }
+        lock.withLock { names.formUnion(hosts) }
+    }
+    func verify(_ derCertificate: Data) -> Bool {
+        guard let cert = SecCertificateCreateWithData(nil, derCertificate as CFData) else {
+            MontanaP2PTrace.mark("relay_tls", "REFUSED not a certificate")
+            return false
+        }
+        let hosts = Self.lock.withLock { Self.names.sorted() }
+        for host in hosts {
+            var trust: SecTrust?
+            guard SecTrustCreateWithCertificates(cert, SecPolicyCreateSSL(true, host as CFString), &trust) == errSecSuccess,
+                  let judged = trust else { continue }
+            if SecTrustEvaluateWithError(judged, nil) {
+                MontanaP2PTrace.mark("relay_tls", "trusted host=\(host)")
+                return true
+            }
+        }
+        MontanaP2PTrace.mark("relay_tls", "REFUSED names=\(hosts.count)")
+        return false
     }
 }

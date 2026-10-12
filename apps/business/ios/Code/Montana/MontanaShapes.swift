@@ -1113,10 +1113,13 @@ struct MontanaCallMark: View {
     static let topPad: CGFloat = 8
     var body: some View {
         Button(action: action) {
+            // THE WHOLE 44-POINT SQUARE IS THE MARK'S (12.10.2026, the author's word 12:3x MSK: «the fold by the arrow does not press
+            // for everyone»): the touch shape was the circle inscribed in the target, and a finger at its corners -- a fifth of the
+            // square -- fell through to the picture's switch under it and toggled the buttons instead.
             let face = MontanaBarGlyph(glyph: glyph)
                 .font(.system(size: 20, weight: .semibold)).foregroundColor(MontanaOctagon.barGlyph)
                 .frame(width: montanaTouchTarget, height: montanaTouchTarget)
-                .contentShape(Circle())
+                .contentShape(Rectangle())
             if #available(iOS 26.0, *) {
                 face.glassEffect(.regular.interactive(), in: Circle())
             } else {

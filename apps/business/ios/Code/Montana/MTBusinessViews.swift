@@ -894,7 +894,7 @@ struct MTBizMemberPage: View {
         }
         .sheet(isPresented: $giving) {
             MTBizCoinsSheet(title: "Send coins", note: false, ask: { sum in (Text("Coins: \(m?.name ?? "")"), Text("Send \(sum)")) }) { coins, _ in
-                MTBusiness.shared.give(Int(clamping: coins), to: member)
+                await MTBusiness.shared.give(Int(clamping: coins), to: member)
             }
         }
         .sheet(isPresented: $placing) { MTBizPlaceSheet(org: org, member: member) }

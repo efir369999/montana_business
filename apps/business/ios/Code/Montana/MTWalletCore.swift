@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import UIKit
+import MontanaBindings
 
 // A reader of the protocol boundary. Missing state stays missing: zero is shown only when
 // mtc_wallet_balance actually returns it. This reader never creates a test network or a person.
@@ -252,6 +253,7 @@ enum MTWalletCore {
             if earned.contains(m.mid) { continue }
             if let floor, m.text.count <= floor || !Self.isText(m) { continue }
             if oneEach, m.coinLetter != nil || m.chessLetter != nil || MTRowLetter.ownRow(m.text) { continue }   // a bubble of words or media alone
+            if m.text.contains(MTCoinTx.link) { continue }   // a transfer's telling letter is the payment's, never a minting letter
             guard Self.wireName(m.mid), !m.text.hasPrefix("\u{200B}\u{200B}"),
                   let born = ChatStore.birthMs(fromMid: m.mid), since <= born else { continue }
             earned.insert(m.mid)
@@ -571,18 +573,34 @@ enum MTCoinBalance {
 /// THE PEOPLE IN THE APP HEAR MY BALANCE MOVE (the author's words 04.10.2026 03:03 and 04:19 MSK: «the update instant, as by a web
 /// socket»): a move of the book says the balance again to the correspondents in the app now, in the app word (E2E.coinBeacon) --
 /// one round in two seconds however fast the coins come, so a minute of minting is thirty rounds to the people online, not one a coin.
+/// A TALKING CALL TELLS AT THE PULL'S PACE (12.10.2026, the critic's finding 10 of helper 65): a call mints every second, so the
+/// two-second round ran for the whole call -- the app word to every person in the app every two seconds, four node posts each where
+/// no live channel stood (the iPhone 17 07:49Z). The author's word of 04.10 stands -- «the update instant, as by a web socket», the
+/// balance moves for the pair -- bounded by his own word of the same day for the wallet's pull, «at most once in fifteen seconds»
+/// (MTWalletPull.tellPairs): while a call talks the round waits fifteen seconds, and the call's end tells the last balance at once.
 @MainActor enum MTCoinTell {
     static let pace: UInt64 = 2
+    static let callPace: UInt64 = 15
     private static var due: Task<Void, Never>?
     static func moved() {
         guard due == nil else { return }
+        let wait = MontanaCall.shared.mintsTalk ? callPace : pace
         due = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: pace * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: wait * 1_000_000_000)
+            guard !Task.isCancelled else { return }
             due = nil
-            guard let store = ChatStore.live else { return }
-            for peer in store.appOnlineChats { E2E.shared.coinBeacon(to: peer) }
-            MTTopNet.shared.put()   // the one table hears it in the same round
+            tell()
         }
+    }
+    /// The call ended: the round that waited goes now, with the last balance.
+    static func callEnded() {
+        due?.cancel(); due = nil
+        tell()
+    }
+    private static func tell() {
+        guard let store = ChatStore.live else { return }
+        for peer in store.appOnlineChats { E2E.shared.coinBeacon(to: peer) }
+        MTTopNet.shared.put()   // the one table hears it in the same round
     }
 }
 
@@ -949,6 +967,13 @@ enum MTCoinShow {
         guard !answered.isEmpty, !moved(gen, why) else { return }
         heard = true
         heardAt = Date().timeIntervalSince1970
+        // THE LETTERS THAT LANDED BEFORE THE BOOK WAS HEARD MINT NOW (MTCoinSend.mintLetter): the tally waits for the seed's book,
+        // and every pair's letters born since its coin came on are walked once it answers -- each paid once by its name.
+        if let store = ChatStore.live {
+            for (k, rows) in store.messages where !MTGroup.isKey(k) && !ChatStore.isLocalRoom(k) && MontanaConv.holds(k) {
+                MTChatMint.shared.credit(rows, oneEach: true)
+            }
+        }
         let ledger = MTLocalCoinLedger.shared.whole
         let joined = ledger.join(fresh)
         let book = ledger.entries
@@ -1371,33 +1396,30 @@ enum MTCoinShow {
 /// to the one called, both of 05.10): every second a call stands connected mints one coin on each side's own phone, the caller's
 /// and the one called, in the calls' own window and TimeChain, on the one beat of the minting by the second (MTMintBeat). One
 /// second, one coin (the constitution, point 11): no level multiplies it.
-/// A CALL'S SECOND FOLLOWS ITS CHAT (the author's words 07.10.2026 21:3x and 21:4x MSK: «from the money flow a call: +1 second
-/// +1 coin, and from an ordinary one -1 for a second of talk»; «7 coins a second of talk for the 7th level; a level 1 on the call
-/// -- x1 for him»): a connected call whose chat has the Money Flow on mints the level's coins a second on this side, each side
-/// by its own level; a call from an ordinary chat burns one coin a second of talk on this side, as a bubble of that chat burns.
-/// A second burns once by its name (the call and the second), whichever beat asks.
+/// EVERY SECOND OF A CALL MINTS THE LEVEL'S COINS TO EACH OF ITS PEOPLE (the author's word 11.10.2026 21:2x MSK: «for calls coins
+/// must be credited x1 to the level for every second to every participant of the call, and in chats»): a connected call mints on
+/// this side the level's coins a second -- the same rule on the other side's phone for its own person, each by their own level,
+/// whatever the chat's Money Flow; nothing burns any more. A second mints once by its window, whichever beat asks.
 @MainActor enum MTCallMint {
     static let refPrefix = "callmint:"
-    static let burnPrefix = "callburn:"
     static var wanted: Bool { MontanaCall.shared.mintsTalk }
-    private static var flowOf: [String: Bool] = [:]   // a call's chat, asked once a call
+    /// THE SECONDS ARE THE CALL'S CLOCK, NOT THE BEAT'S (12.10.2026, the author's word 11:5x MSK: «for calls coins must be credited
+    /// to both correspondents by their level for every second»): a beat minted one second, and a beat is a second plus its own
+    /// work -- B9F26F54 minted 2169 seconds of the 2223 it talked 07:24-08:01Z, while the iPhone 17 at the other end minted 2224.
+    /// Each beat mints the seconds the call has talked since the last second it minted. The first beat of a call in this run
+    /// counts from one second back: a run that came back into a talking call must not mint the seconds the run before it minted.
+    private static var minted: (call: String, seconds: Int)?
     static func mintSecond() {
-        guard let talk = MontanaCall.shared.talkSecond else { return }
-        if flows(talk.peer, call: talk.call) {
-            let coins = MTCoinBook.ledger.mintInWindow(MTCoinBook.price, prefix: refPrefix, seconds: 1, byLevel: true)
-            MontanaP2PTrace.markFolded("call_mint", "coins=\(coins)", window: 60)
-        } else {
-            let burned = MTCoinBook.ledger.burn(MTCoinBook.price, ref: burnPrefix + talk.ref)
-            MontanaP2PTrace.markFolded("call_burn", "coins=\(burned)", window: 60)
+        guard let t = MontanaCall.shared.talkElapsed else { return }
+        let base = (minted?.call == t.call ? minted?.seconds : nil) ?? max(0, t.seconds - 1)
+        let fresh = t.seconds - base
+        guard 0 < fresh else {
+            if fresh != 0 { minted = (t.call, t.seconds) }   // the call's clock went back (a new connection): count from it
+            return
         }
-    }
-    /// The Money Flow is a chat's own switch, named by the chat; the call knows its peer -- the chat that holds it is asked once.
-    private static func flows(_ peer: String, call: String) -> Bool {
-        if let known = flowOf[call] { return known }
-        let chat = ChatStore.live?.listChats().first(where: { c in c.name == peer || c.convId == peer })?.name
-        let on = MTMoneyFlow.isOn(peer) || MTMoneyFlow.isOn(chat ?? "")
-        flowOf = [call: on]
-        return on
+        minted = (t.call, t.seconds)
+        let coins = MTCoinBook.ledger.mintInWindow(MTCoinBook.price * fresh, prefix: refPrefix, seconds: fresh, byLevel: true)
+        MontanaP2PTrace.markFolded("call_mint", "coins=\(coins) seconds=\(fresh)", window: 60)
     }
 }
 
@@ -2070,6 +2092,7 @@ struct MTCoinCounts {
         MTTimeChain.appendPast(r.moves)
         MTCoinBalance.set(sum)
         MTCoinVault.shared.soon("read", after: 1)
+        MTCoinSend.returnUndeliverable(self)
     }
 
     /// THE MOVES OF THE SEED'S OTHER DEVICES (MTCoinVault): taken once by their names into this book and this phone's file, in one
@@ -2095,6 +2118,7 @@ struct MTCoinCounts {
         MTTimeChain.appendPast(fresh)
         if let file { let lines = fresh; disk.async { MTLocalCoinLedger.append(lines, to: file) } }
         MontanaP2PTrace.mark("coin_book", "joined moves=\(fresh.count) balance=\(sum)")
+        MTCoinSend.returnUndeliverable(self)
         return fresh.count
     }
 
@@ -2380,10 +2404,10 @@ struct MTCoinCounts {
     func received(_ ref: String) -> Bool { taken.contains("receive:" + ref) }
     /// Whether the book holds a move of this kind under this name (MTCoinSend.hold counts a coin letter's moves by them).
     func holds(_ k: MTCoinEntry.Kind, _ ref: String) -> Bool { taken.contains(k.rawValue + ":" + ref) }
-    /// The coins of one move by its kind and name (a coin letter's transfer, read when its row is gone: MTCoinSend.arrived).
-    func amount(_ k: MTCoinEntry.Kind, _ ref: String) -> Int? {
+    /// One move by its kind and name (a coin letter's transfer, read when its row is gone: MTCoinSend.arrived, returnUndeliverable).
+    func entry(_ k: MTCoinEntry.Kind, _ ref: String) -> MTCoinEntry? {
         let id = k.rawValue + ":" + ref
-        return entries.last { e in e.id == id }?.c
+        return entries.last { e in e.id == id }
     }
 }
 
@@ -2469,32 +2493,50 @@ enum MTOwnWords {
 enum MTCoinSend {
     /// The system chain's name for a restored credit: this prefix and the coin letter's wire name.
     static let restorePrefix = "restore:"
-    /// A pair's own conversation, open to letters: where coins can go.
-    @MainActor static func canPay(_ chat: Chat, store: ChatStore) -> Bool {
+    /// A pair's own conversation, open to letters, of other words than mine: where a bubble burns its coin (pay).
+    @MainActor static func pairOpen(_ chat: Chat, store: ChatStore) -> Bool {
         let conv = chat.convId ?? chat.name
         return !chat.isGroup && !ChatStore.isLocalRoom(chat.name) && chat.convId != nil && MontanaConv.holds(conv)
             && !store.refuses(conv) && !store.closedChats.contains(conv) && !MTOwnWords.mine(conv)
     }
-    /// Coins to a person, as a coin letter in their chat. False -- refused (the balance, the chat), nothing sent.
-    @MainActor static func transfer(_ coins: Int, to chat: Chat, store: ChatStore) -> Bool {
-        send(coins, to: chat, store: store, name: nil) != nil
+    /// WHERE COINS CAN GO: EVERY OPEN PAIR, FOR A PERSON IS THEIR SEED AND THE WALLET IS IN IT (the author's words 11.10.2026 19:5x
+    /// MSK: «why does it say Andrey has no wallet and not let me send -- he has a seed, so he has a wallet»; «a gross error -- the seed
+    /// is already there, what has a wallet to do with it -- the person is the seed and everything is in it»). A pair had to say it held
+    /// coins before it could take them, and on Montana's T1 24 of 29 pairs stood dimmed «no wallet yet» (coin_send_page pairs=29
+    /// holders=5, 11.10 15:40Z) -- people on builds with coins who had not yet sent the word that carried the mark. The coins are the
+    /// seed's: a letter its build credits at the landing, or at the first launch of a build with coins (settle), and a letter not
+    /// delivered in a day gives them back (hold).
+    @MainActor static func canPay(_ chat: Chat, store: ChatStore) -> Bool {
+        pairOpen(chat, store: store)
     }
-    /// The one road of a coin letter: the book is asked first, the letter rides the chat, the book pays by the letter's wire
-    /// name. A payment of the Business names its letter (name, MTCoinLetter.r). The letter's wire name, or nil -- refused.
-    @MainActor static func send(_ coins: Int, to chat: Chat, store: ChatStore, name: String?) -> String? {
+    /// COINS TO A PERSON ARE A RECORD ON THE NODES, THE LETTER ONLY TELLS (MTCoinTx, Montana's Audit/COIN-TX-V1.md): the record's
+    /// first node 200 is the moment they left and the book's debit; then a letter in the chat says how many and carries the
+    /// confirmation link. False -- refused (the balance, the chat) or no node took the record: nothing moved. An organisation's
+    /// payment keeps its coin letter (send below): its Receipt is the keeper's word on that letter's name (MTBusiness.settle).
+    @MainActor static func transfer(_ coins: Int, to chat: Chat, store: ChatStore) async -> Bool {
+        await move(coins, to: chat, store: store, nonce: nil) != nil
+    }
+    /// The same transfer, its record's id said (a transfer to one's own other account lands it in that person's book: MTSeats.landTransfer).
+    @MainActor static func transferId(_ coins: Int, to chat: Chat, store: ChatStore) async -> String? {
+        await move(coins, to: chat, store: store, nonce: nil)
+    }
+    /// A PAY OF THE BUSINESS (MTBusiness.settleNow, article 0): the same transfer, its record carrying the pay's nonce
+    /// (MTCoinTx.payNonce) so the pay's two ends know it by the record alone. The transfer's id, or nil -- the coins stayed. The
+    /// coin letter that carried a pay before (its coins taken, its delivery not proven) no longer leaves: a third state is gone.
+    @MainActor static func transferNamed(_ coins: Int, to chat: Chat, store: ChatStore, nonce: Data) async -> String? {
+        await move(coins, to: chat, store: store, nonce: nonce)
+    }
+    @MainActor private static func move(_ coins: Int, to chat: Chat, store: ChatStore, nonce: Data?) async -> String? {
         let conv = chat.convId ?? chat.name
-        let minted = ChatStore.mintMid()   // the letter's wire name first: the letter names itself by it (MTCoinLetter.bound)
-        let named = String(minted.mid.drop { ch in ch != "-" }.dropFirst())
-        guard canPay(chat, store: store), 0 < coins, coins <= MTCoinBook.ledger.balance,
-              let text = MTCoinLetter(c: coins, id: named, r: name).text() else {
+        guard canPay(chat, store: store), 0 < coins, coins <= MTCoinBook.ledger.balance else {
             MontanaP2PTrace.mark("coin_refused", "transfer coins=\(coins) balance=\(MTCoinBook.ledger.balance) own=\(MTOwnWords.mine(conv) ? 1 : 0)")
             return nil
         }
-        MTCoinLetter.born = text
-        let m = store.send(text: text, chat: chat.name, convRef: conv, silent: false, noLinkCard: true, minted: minted)
-        MTCoinLetter.born = nil
-        guard !m.text.isEmpty, !m.mid.isEmpty else { return nil }
-        return MTCoinBook.ledger.send(coins, to: conv, ref: m.mid) ? m.mid : nil
+        guard let id = await MTCoinTx.send(coins, conv: conv, nonce: nonce) else { return nil }
+        // USER-DATA: the coin glyph, the number and the ticker, the same in every language; the link is the transfer's own address
+        let text = "🪙 " + MTCoinText.count(coins) + " " + MTCoinBook.ticker + "\n" + MTCoinTx.link + id
+        _ = store.send(text: text, chat: chat.name, convRef: conv, silent: false, noLinkCard: true)
+        return id
     }
     /// Coins given on the correspondent's letter: the book pays, the reaction word carries them («op»: «coin»). An older build
     /// reads an unknown op as nothing at all.
@@ -2527,18 +2569,19 @@ enum MTCoinSend {
     /// burns nothing more. An empty balance burns nothing and the bubble goes all the same; a coin letter is a payment in its own
     /// right, a chess step is the board's, a row of the phone's own goes nowhere.
     static let bubblePrefix = "bubble:"
+    /// A letter is fresh for a day from its birth: an auto-reaction pays only a letter born within it (MTAutoReact.landed).
+    static let fresh: Double = 86_400
     /// The name a reaction word's coins are credited under on the reader's book: this prefix and the name the word carries.
     static let receivedPrefix = "rc:"   // NOT-UI: the book's own name
-    /// A bubble burns while it is on its way and born within a day: a history laid in again never burns twice.
-    static let fresh: Double = 86_400
-    @MainActor static func pay(_ m: Message, in key: String, store: ChatStore) {
-        guard m.isFromMe, m.deliveryStatus == .sending || m.deliveryStatus == .sent, let sid = m.msgId, MTChatMint.wireName(sid),
-              !MTMoneyFlow.isOn(key), m.coinLetter == nil, m.chessLetter == nil, !m.text.hasPrefix("\u{200B}\u{200B}"),
-              let born = ChatStore.birthMs(fromMid: sid), Date().timeIntervalSince1970 - born <= fresh,
-              let chat = store.listChats().first(where: { c in c.name == key }), canPay(chat, store: store),
-              !MTLocalCoinLedger.shared.whole.holds(.spend, bubblePrefix + sid),
-              0 < MTCoinBook.ledger.burn(1, ref: bubblePrefix + sid) else { return }
-        MTCoinPaid.shared.paid(1, in: key)
+    /// EVERY LETTER OF A PAIR'S CHAT MINTS THE LEVEL'S COINS TO EACH OF ITS PEOPLE (the author's word 11.10.2026 21:2x MSK: «coins
+    /// must be credited x1 to the level ... and in chats»): a letter of mine or of my correspondent, standing in a pair's own
+    /// conversation, mints my level's coins once by its name on this phone -- the correspondent's phone mints its own for the same
+    /// letter, whatever the chat's Money Flow; nothing burns any more (the bubble's burn of 05.10 is gone). It mints when the letter
+    /// takes its wire name -- at its landing, or a media letter when it is named; a history laid in again mints nothing, for the
+    /// tally pays only letters born since its coin came on (MTChatMint.credit), and only once the seed's book is heard.
+    @MainActor static func mintLetter(_ m: Message, in key: String) {
+        guard !MTGroup.isKey(key), !ChatStore.isLocalRoom(key), MontanaConv.holds(key) else { return }
+        MTChatMint.shared.credit([m], oneEach: true)
     }
     /// A COIN LETTER THAT DID NOT GO GIVES ITS COINS BACK (the author's word 05.10.2026 01:40 MSK: «I sent Narine 60 000 coins from
     /// T1, the letter did not go and they were taken from me; while the retry mark hangs, return them to the sender's balance with
@@ -2550,18 +2593,94 @@ enum MTCoinSend {
     /// reading asks it of every one (settle) -- a letter red before this build gives its coins back at the first launch.
     static let backPrefix = "back:"
     static let againPrefix = "again:"
+    /// A COIN LETTER NOT DELIVERED IN A DAY GIVES ITS COINS BACK (the author's words 10.10.2026 23:3x MSK: «a rule common to every
+    /// wallet: if it did not arrive in 24 hours -- it comes back»): T2's 727 639 coins to an account whose phone is gone rode 44 hours
+    /// without a receipt and stayed taken, for a letter of mine rides to its receipt (MTRefusal) and only red gave coins back. The
+    /// coins follow the letter's proof as well as its rung: delivered or read, they are the receiver's; on its way and born within
+    /// the day, held; red, or on its way past the day, back. The letter rides on under its rung, and a receipt after the day takes
+    /// them again by the same again move -- a coin never stands in two books.
+    static let day: Double = 86_400
     @MainActor static func hold(_ m: Message, in key: String) {
         guard m.isFromMe, let coin = m.coinLetter, !m.mid.isEmpty else { return }
         let book = MTLocalCoinLedger.shared.whole
         guard book.holds(.send, m.mid) else { return }   // a transfer the book refused never took a coin
         let again = moves(book, .send, againPrefix + m.mid), back = moves(book, .receive, backPrefix + m.mid)
-        let held = again == back
-        if m.deliveryStatus == .failed, held {
-            giveBack(coin.c, letter: m.mid, count: back, to: key, why: "red")
-        } else if m.deliveryStatus != .failed, !held {
+        let held = again == back, owed = owes(m, in: key)
+        if held, !owed {
+            giveBack(coin.c, letter: m.mid, count: back, to: key, why: m.deliveryStatus == .failed ? "red" : "day")
+        } else if !held, owed, !namedBack(m.mid, coins: coin.c) {
             let took = book.retake(coin.c, to: key, ref: againPrefix + m.mid + ":" + String(again + 1))
             MontanaP2PTrace.mark("coin_again", "coins=\(coin.c) took=\(took ? 1 : 0) status=\(m.deliveryStatus)")
         }
+    }
+    /// Whether a coin letter of mine holds its coins: proven delivered, or on its way and born within the day.
+    @MainActor private static func owes(_ m: Message, in key: String) -> Bool {
+        switch m.deliveryStatus {
+        case .delivered, .read: return true
+        case .failed: return false
+        case .sending, .sent:
+            guard let born = ChatStore.birthMs(fromMid: m.mid) else { return true }   // a name without its birth: held as before
+            return Date().timeIntervalSince1970 - born < day
+        }
+    }
+    /// The day ends while no rung moves: every beat of the queue's mirror
+    /// (MontanaDeliveryEngine.reconcile) asks the coin letters of mine still on their way.
+    @MainActor static func due(_ store: ChatStore) {
+        for (chat, rows) in store.messages {
+            for m in rows where m.isFromMe && (m.deliveryStatus == .sending || m.deliveryStatus == .sent) && m.coinLetter != nil {
+                hold(m, in: chat)
+            }
+        }
+    }
+    /// THE LETTERS THE AUTHOR NAMED UNDELIVERABLE (the author's words 10.10.2026 23:2x-23:3x MSK: «there was a transfer from T2 to a
+    /// dead account on Android, the coins were not received, they got stuck somewhere -- find them and return them to the sender»;
+    /// «and return them to the sender now»): T2's coin letter of 08.10 18:18:19Z rode 44 hours without a receipt, no device of the
+    /// account waking (woken=0), and the Montana build that took the coins out of the chats ended its row and its queue item
+    /// (queue_mirror 10.10 14:05:46Z) -- no chat of any wallet holds it, and the day above cannot reach it. Its name stands here;
+    /// the book that holds its transfer -- T2's words, in whichever wallet they open -- gives the coins back once, by the back move.
+    static let undeliverable = ["mid:t1791483499406-5CA782B0-A754-4443-B673-0579412060C2"]   // NOT-UI: a letter's wire name
+    /// THE TRANSFER THE AUTHOR NAMED BY ITS PAIR AND ITS SUM (the author's word 11.10.2026 21:3x MSK: «in the next build return the
+    /// 4 million coins to the business account -- close the hole: either the money arrived or not, there is no third»; the
+    /// constitution's article 0 since that evening). Account 8e3534f4 sent its other account 51640034 4 105 470 coins through the
+    /// pair a:fe0bfe at 15:51:48Z (coin_send); seven seconds later the phone seated the receiver, which never took the letter (no
+    /// coin_rx), and at 15:53:13Z erased it -- the coins stood on the way, the third state. The book that holds that transfer gives
+    /// it back once -- only a transfer never given back nor taken again -- and the letter leaves the queue and the node box in the
+    /// same turn (clearChat), so no device of the receiver's words can ever credit it: the coins did not leave.
+    /// THE PAIR IS FOUND AS THE DIARY NAMED IT (the author's word 12.10.2026 13:3x MSK, No.65: «on T1 build 81 of Business and nothing
+    /// came back -- check and fix»): 81 compared the book's pipe name with «a:fe0bfe», and that is no pipe name -- the diary never
+    /// writes one, it writes the salted label MontanaLog.hide makes of the name's first ten characters (three bytes of SHA-256 over
+    /// this phone's salt and the name), so the comparison could never hold and the first launch of 81 gave nothing back. The
+    /// transfer is found by its sum and by the label the same function makes under the same salt on the phone that sent it, or --
+    /// a salt drawn anew -- by its sum and its minute, 11.10.2026 15:51:48Z.
+    static let undeliverableTo: [(label: String, coins: Int, at: Double)] = [("a:fe0bfe", 4_105_470, 1_791_733_908)]   // NOT-UI: the diary's label, the sum and the second named
+    private static func named(_ peer: String, as label: String) -> Bool {
+        MontanaLog.hide(String(peer.prefix(10))) == label || MontanaLog.hide(peer) == label
+    }
+    @MainActor static func returnUndeliverable(_ book: MTLocalCoinLedger) {
+        for name in undeliverable {
+            guard let sent = book.entry(.send, name), let peer = sent.peer else { continue }
+            let back = moves(book, .receive, backPrefix + name)
+            guard moves(book, .send, againPrefix + name) == back else { continue }
+            giveBack(sent.c, letter: name, count: back, to: peer, why: "named")
+        }
+        for one in undeliverableTo {
+            // A coin letter only: a transfer record of the same sum to the same pair is a transfer that left (MTCoinTx, article 0).
+            for sent in book.entries where sent.k == .send && sent.c == one.coins && !sent.ref.hasPrefix(MTCoinTx.refPrefix) {
+                guard let peer = sent.peer, named(peer, as: one.label) || abs(sent.at - one.at) < 60 else { continue }
+                let name = sent.ref
+                guard moves(book, .receive, backPrefix + name) == 0, moves(book, .send, againPrefix + name) == 0 else { continue }
+                MontanaDeliveryEngine.shared.clearChat(peer)
+                giveBack(sent.c, letter: name, count: 0, to: peer, why: "named-pair")
+            }
+        }
+    }
+    /// A LETTER THE AUTHOR NAMED BACK NEVER RIDES AGAIN (No.65): once given back by name, no road of this file -- the day's hold, a
+    /// receipt for a gone row, the hand's retry -- takes its coins again: a coin never stands in two books.
+    static func namedBack(_ name: String, coins: Int) -> Bool {
+        let full = name.hasPrefix("mid:") ? name : "mid:" + name
+        if undeliverable.contains(full) { return true }
+        guard let born = ChatStore.birthMs(fromMid: full) else { return false }
+        return undeliverableTo.contains { one in one.coins == coins && abs(born - one.at) < 60 }
     }
     /// How many moves of one kind a coin letter's name has drawn: name:1, name:2 ...
     @MainActor private static func moves(_ book: MTLocalCoinLedger, _ k: MTCoinEntry.Kind, _ name: String) -> Int {
@@ -2605,7 +2724,7 @@ enum MTCoinSend {
     @MainActor static func arrived(_ mid: String, from key: String) {
         let name = mid.hasPrefix("mid:") ? mid : "mid:" + mid
         let book = MTLocalCoinLedger.shared.whole
-        guard book.holds(.send, name), let c = book.amount(.send, name) else { return }
+        guard book.holds(.send, name), let c = book.entry(.send, name)?.c, !namedBack(name, coins: c) else { return }
         let again = moves(book, .send, againPrefix + name), back = moves(book, .receive, backPrefix + name)
         guard again < back else { return }
         let took = book.retake(c, to: key, ref: againPrefix + name + ":" + String(again + 1))
@@ -2614,6 +2733,7 @@ enum MTCoinSend {
     /// The hand's retry of a coin letter whose coins came back takes them again first: a short balance refuses the retry.
     @MainActor static func mayRetry(_ m: Message) -> Bool {
         guard m.isFromMe, let coin = m.coinLetter else { return true }
+        if namedBack(m.mid, coins: coin.c) { return false }   // a letter the author named back never rides again
         let book = MTLocalCoinLedger.shared.whole
         guard book.holds(.send, m.mid) else { return true }
         return moves(book, .send, againPrefix + m.mid) == moves(book, .receive, backPrefix + m.mid) || coin.c <= book.balance
@@ -2713,5 +2833,333 @@ enum MTAutoReact {
         chat = key
         tick += 1
         MontanaP2PTrace.markFolded("coin_paid", "coins=\(c)", window: 60)
+    }
+}
+
+
+/// THE COIN TRANSFER IS ONE RECORD ON THE NODES (Montana's Audit/COIN-TX-V1.md, the one source of the format; the author's words
+/// 11.10.2026 19:5x-20:2x MSK: «a person is their seed and everything is in it»; «so I can pay them in any scenario»; «either the coins left or not -- there is no third»;
+/// «professional, in the TimeChain, for auditors»). A coin letter carried the coins inside a letter, so their fate was the letter's:
+/// a build that buries the coin link (2162-2179) dropped it and the coins stood a day nowhere (the critic 11.10, B-1). The record is
+/// signed by the seed's coin key and laid on the nodes' append-only log; a node's 200 is the moment the coins left, and the
+/// receiver's book finds the record by its pair's tag on any later build, on any device of its seed. A chat letter only tells.
+enum MTCoinTx {
+    static let size = 5330    // version 1 (Audit/COIN-TX-V1.md), read only: builds 2190 and older send it
+    static let size2 = 5362   // version 2 (Audit/COIN-TX-V2.md), the record this build sends
+    static let refPrefix = "tx:"          // NOT-UI: the book's name of a transfer's moves
+    static let backPrefix = "txback:"     // NOT-UI: the book's name of a debit no node took
+    static let link = "https://montana.xxx/explorer/#tx="   // NOT-UI: the transfer's confirmation link (the Explorer)
+    static let explorer = URL(string: "https://montana.xxx/explorer/") ?? URL(fileURLWithPath: "/")   // NOT-UI: the Explorer's page
+    /// THE CHAINS' NODES (Audit/COIN-TX-V2.md): the protocol's two nodes, sorted by name, each with its one door -- Moscow and
+    /// Amsterdam; a key's chain lives on the one at the index of the key tag's first byte. Every phone and the Explorer read the same
+    /// table, so a chain never splits; a node not in it (Lauterbourg keeps no transfers) is no chain node.
+    static let chainNodes: [(name: String, host: String)] = [("montana.quest", "api.montana.quest"), ("montana.xxx", "montana.xxx")]   // NOT-UI: the protocol's chain set, one place
+    private static let magic = Data("MTTX".utf8)
+    private static let signed1 = Data("mt-coin-tx-v1".utf8)
+    private static let signed2 = Data("mt-coin-tx-v2".utf8)
+    private static let pairInfo = Data("mt-coin-pair-v1".utf8)
+    static let zero = String(repeating: "0", count: 64)
+    struct Record { let id: String; let version: UInt8; let coins: Int; let birthMs: UInt64; let nonce: Data; let pair: Data; let prev: String; let from: String; let bytes: Data }
+    enum Word: Equatable { case left, notLeft, unknown, behind }
+
+    private static let keyLock = NSLock()
+    private static var keyCache: (words: Data, pk: Data, sk: Data)?
+    /// The seed's coin key: HKDF-Expand(master_seed, "mt-coin-tx", 32) into ML-DSA-65 -- one on every device of the words, and no
+    /// relation to the identity's account key (a coin key names no person's number or card).
+    static func keys() -> (pk: Data, sk: Data)? {
+        guard let words = MontanaSeed.mnemonic else { return nil }
+        let tag = Data(SHA256.hash(data: Data(words.utf8)))
+        keyLock.lock()
+        if let c = keyCache, c.words == tag { keyLock.unlock(); return (c.pk, c.sk) }
+        keyLock.unlock()
+        guard let master = MontanaQueueKeys.masterSeed(words), master.count == 64 else { return nil }
+        var seed = [UInt8](repeating: 0, count: 32)
+        let role = Array("mt-coin-tx".utf8)
+        let rc = master.withUnsafeBytes { m -> Int32 in
+            role.withUnsafeBufferPointer { r -> Int32 in
+                guard let mb = m.bindMemory(to: UInt8.self).baseAddress else { return -1 }
+                return mt_mldsa_seed_for_role(mb, r.baseAddress, role.count, &seed)
+            }
+        }
+        guard rc == 0 else { return nil }
+        var pk = [UInt8](repeating: 0, count: 1952), sk = [UInt8](repeating: 0, count: 4032)
+        guard mt_mldsa_keypair_from_seed(seed, &pk, &sk) == 0 else { return nil }
+        keyLock.lock(); keyCache = (tag, Data(pk), Data(sk)); keyLock.unlock()
+        return (Data(pk), Data(sk))
+    }
+    static func hex(_ d: Data) -> String { d.map { b in String(format: "%02x", b) }.joined() }
+    private static func unhex(_ s: String) -> Data? {
+        guard s.count % 2 == 0 else { return nil }
+        var out = Data(); var i = s.startIndex
+        while i < s.endIndex {
+            let j = s.index(i, offsetBy: 2)
+            guard let b = UInt8(s[i..<j], radix: 16) else { return nil }
+            out.append(b); i = j
+        }
+        return out
+    }
+    /// The coin key's tag on the wire: SHA-256 of the coin key -- the sender's name in every record.
+    static func keyTag(_ pk: Data) -> String { hex(Data(SHA256.hash(data: pk))) }
+    static var myKeyTag: String? { keys().map { k in keyTag(k.pk) } }
+    /// The pair's tag: HMAC-SHA-256 under the pipe's secret -- its two ends know it, no one else does.
+    static func pairTag(_ conv: String) -> Data? {
+        guard let secret = MTPipeBook.secret(for: conv), !secret.isEmpty else { return nil }
+        return Data(HMAC<SHA256>.authenticationCode(for: pairInfo, using: SymmetricKey(data: secret)))
+    }
+    private static func le(_ v: UInt64) -> Data { withUnsafeBytes(of: v.littleEndian) { p in Data(p) } }
+    private static func u64(_ b: [UInt8], _ at: Int) -> UInt64 {
+        (0..<8).reduce(UInt64(0)) { v, i in v | (UInt64(b[at + i]) << (8 * UInt64(i))) }
+    }
+    private static let payInfo = Data("mt-biz-pay-v1".utf8)
+    /// A PAY'S NONCE (the Business, article 0): HMAC-SHA-256 under the pair's pipe secret over "mt-biz-pay-v1" and the pay's coin_ref,
+    /// its first 16 bytes -- the pay's two ends find their pay in the signed record, a node reads 16 bytes it cannot tell from random.
+    static func payNonce(conv: String, ref: String) -> Data? {
+        guard let secret = MTPipeBook.secret(for: conv), !secret.isEmpty else { return nil }
+        return Data(Data(HMAC<SHA256>.authenticationCode(for: payInfo + Data(ref.utf8), using: SymmetricKey(data: secret))).prefix(16))
+    }
+    /// Whether a record waiting on disk for its node's word carries this nonce: its pay is not sent a second time meanwhile.
+    static func waiting(nonce: Data) -> Bool {
+        guard let dir = MTTimeChainPlace.dir() else { return false }
+        for n in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where n.hasPrefix("tx-pending-") && n.hasSuffix(".rec") {
+            if let rec = try? Data(contentsOf: dir.appendingPathComponent(n)), 37 <= rec.count, Data(rec[21..<37]) == nonce { return true }
+        }
+        return false
+    }
+    /// The record of version 2, signed by the core on top of the key's head (nil: no words, no pipe, or the core refused). A pay of
+    /// the Business brings its own nonce (payNonce); every other transfer draws a random one.
+    static func build(_ coins: Int, conv: String, prev: String, nonce fixed: Data? = nil) -> Data? {
+        guard 0 < coins, let k = keys(), let pair = pairTag(conv), let p = unhex(prev), p.count == 32 else { return nil }
+        var nonce = [UInt8](repeating: 0, count: 16)
+        if let fixed {
+            guard fixed.count == 16 else { return nil }
+            nonce = [UInt8](fixed)
+        } else {
+            guard SecRandomCopyBytes(kSecRandomDefault, nonce.count, &nonce) == errSecSuccess else { return nil }
+        }
+        var body = magic
+        body.append(2)
+        body.append(le(UInt64(coins)))
+        body.append(le(UInt64(max(0, Date().timeIntervalSince1970 * 1000))))
+        body.append(contentsOf: nonce)
+        body.append(pair)
+        body.append(p)
+        body.append(k.pk)
+        guard body.count == 2053, let sig = MontanaPQ.sign(seckey: k.sk, message: signed2 + body), sig.count == 3309 else { return nil }
+        return body + sig
+    }
+    static func name(_ rec: Data) -> String { hex(Data(SHA256.hash(data: rec))) }
+    /// A record read back -- version 1 or 2 -- believed only when its shape holds and the core verifies its signature.
+    static func read(_ rec: Data) -> Record? {
+        let b = [UInt8](rec)
+        guard 5 <= b.count, Data(b[0..<4]) == magic else { return nil }
+        let v = b[4]
+        let end: Int, keyAt: Int, total: Int, prefix: Data
+        switch v {
+        case 1: end = 2021; keyAt = 69; total = size; prefix = signed1
+        case 2: end = 2053; keyAt = 101; total = size2; prefix = signed2
+        default: return nil
+        }
+        guard b.count == total else { return nil }
+        let coins = u64(b, 5)
+        guard 0 < coins, coins <= UInt64(Int.max) else { return nil }
+        let body = Data(b[0..<end]), pk = Data(b[keyAt..<end]), sig = Data(b[end..<total])
+        guard MontanaPQ.verify(pubkey: pk, message: prefix + body, signature: sig) else { return nil }
+        return Record(id: name(rec), version: v, coins: Int(coins), birthMs: u64(b, 13), nonce: Data(b[21..<37]), pair: Data(b[37..<69]),
+                      prev: v == 2 ? hex(Data(b[69..<101])) : "", from: keyTag(pk), bytes: rec)
+    }
+    private static func doors() -> [String] { MontanaWakePush.oneDoorPerNode(MontanaWakePush.orderedBases(for: "vault")) }
+    /// A door's chain node: the node whose door it is, nil for any other door.
+    private static func chainNode(ofDoor door: String) -> String? {
+        guard let host = URL(string: door)?.host else { return nil }
+        return chainNodes.first { n in n.host == host }?.name
+    }
+    /// A key's chain node: the one at the index of the key tag's first byte.
+    static func chainNode(of from: String) -> String? {
+        guard let first = UInt8(from.prefix(2), radix: 16) else { return nil }
+        return chainNodes[Int(first) % chainNodes.count].name
+    }
+    /// THE DOOR OF A KEY'S CHAIN: its node through the api door when the phone knows it, else through any door of that node the
+    /// phone holds, else through the node's own api name.
+    static func chainDoor(_ from: String) -> String? {
+        guard let node = chainNode(of: from) else { return nil }
+        return door(ofNode: node)
+    }
+    private static func door(ofNode node: String) -> String? {
+        chainNodes.first { n in n.name == node }.map { n in "https://" + n.host + "/pushwake" }
+    }
+    /// A node's answer, and whether the request never reached it (no network, no name, no connection): only such a silence
+    /// proves nothing was laid there.
+    private static func ask(_ url: String, _ body: [String: Any]) async -> (code: Int, obj: [String: Any]?, unreached: Bool) {
+        guard let u = URL(string: url), let d = try? JSONSerialization.data(withJSONObject: body) else { return (-1, nil, true) }   // SERVER-DEBT-ACK: the accelerator node (rung 4), the transfers' log
+        var req = URLRequest(url: u); req.httpMethod = "POST"; req.timeoutInterval = 15   // SERVER-DEBT-ACK: the accelerator node (rung 4)
+        req.setValue("application/json", forHTTPHeaderField: "content-type")
+        req.httpBody = d
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)   // SERVER-DEBT-ACK: the accelerator node (rung 4)
+            return ((resp as? HTTPURLResponse)?.statusCode ?? -1, try? JSONSerialization.jsonObject(with: data) as? [String: Any], false)
+        } catch let e as URLError {
+            let never: Set<URLError.Code> = [.notConnectedToInternet, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff]
+            return (-1, nil, never.contains(e.code))
+        } catch {
+            return (-1, nil, false)
+        }
+    }
+    /// THE NODE'S WORD DECIDES (the keeper's state is said by the keeper): a version 2 record goes to its key's chain node alone --
+    /// taken there, left; standing on a head that moved, behind; refused, or the request never reached it, not left; anything else
+    /// waits for that node's word. A version 1 record (an older build's, settled here) keeps its own rule: any door that takes it.
+    static func lay(_ rec: Data) async -> Word {
+        let id = name(rec)
+        let b = [UInt8](rec)
+        guard 5 <= b.count else { return .notLeft }
+        if b[4] == 2, b.count == size2 {
+            guard let door = chainDoor(keyTag(Data(b[101..<2053]))) else { return .notLeft }
+            let a = await ask(door + "/tx-put", ["rec": rec.base64EncodedString()])
+            if a.code == 200, (a.obj?["id"] as? String) == id { return .left }
+            if a.code == 409 { return .behind }
+            if a.code == 400 || a.code == 429 || a.code == 507 || a.unreached { return .notLeft }
+            let g = await ask(door + "/tx-get", ["id": id])
+            return g.code == 200 ? .left : .unknown
+        }
+        var refused = 0, unreached = 0, all = 0
+        for door in doors() {
+            all += 1
+            let a = await ask(door + "/tx-put", ["rec": rec.base64EncodedString()])
+            if a.code == 200, (a.obj?["id"] as? String) == id { return .left }
+            if a.code == 400 || a.code == 507 { refused += 1 } else if a.unreached { unreached += 1 }
+        }
+        if 0 < all, refused + unreached == all { return .notLeft }
+        for door in doors() {
+            let a = await ask(door + "/tx-get", ["id": id])
+            if a.code == 200 { return .left }
+        }
+        return .unknown
+    }
+    private static func pendingURL(_ id: String) -> URL? { MTTimeChainPlace.dir()?.appendingPathComponent("tx-pending-" + id + ".rec") }
+    /// SENDS (version 2): the key's head from its chain node, the record on top of it, the debit held under the record's name, the
+    /// record laid there. Taken -- the coins left. A head that moved (another device of the words sent meanwhile) -- the coins come
+    /// back under the same number, the seed's own records join the book, the balance is asked again and one more record goes on the
+    /// new head. Refused, or never reached -- the coins come back. No answer -- the record waits on disk for the node's word (settle).
+    @MainActor static func send(_ coins: Int, conv: String, nonce: Data? = nil) async -> String? {
+        guard let me = myKeyTag, let door = chainDoor(me) else { return nil }
+        let book = MTLocalCoinLedger.shared.whole
+        for attempt in 1...2 {
+            let h = await ask(door + "/tx-head", ["from": me])
+            guard h.code == 200, let head = h.obj?["head"] as? String, head.count == 64 else {
+                MontanaP2PTrace.mark("coin_tx", "no head code=\(h.code) attempt=\(attempt)")
+                return nil
+            }
+            guard let rec = await Task.detached(priority: .userInitiated, operation: { build(coins, conv: conv, prev: head, nonce: nonce) }).value else {
+                MontanaP2PTrace.mark("coin_tx", "refused build coins=\(coins)")
+                return nil
+            }
+            let id = name(rec)
+            guard book.send(coins, to: conv, ref: refPrefix + id) else { return nil }
+            let pending = pendingURL(id)
+            if let pending { try? rec.write(to: pending, options: .atomic) }
+            let word = await lay(rec)
+            MontanaP2PTrace.mark("coin_tx", "word=\(word) coins=\(coins) id=\(id.prefix(12)) attempt=\(attempt)")
+            switch word {
+            case .left:
+                if let pending { try? FileManager.default.removeItem(at: pending) }
+                return id
+            case .notLeft, .behind:
+                book.receive(coins, from: conv, ref: backPrefix + id, on: nil)
+                if let pending { try? FileManager.default.removeItem(at: pending) }
+                if word == .notLeft { return nil }
+                await scanFresh(why: "behind")   // the other device's record joins the book before the balance is asked again
+            case .unknown:
+                return nil
+            }
+        }
+        return nil
+    }
+    /// The records an ended process left waiting, each decided by a node's word; then the pipes are asked.
+    @MainActor static func settle() async {
+        let fm = FileManager.default
+        if let dir = MTTimeChainPlace.dir() {
+            for n in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where n.hasPrefix("tx-pending-") && n.hasSuffix(".rec") {
+                let u = dir.appendingPathComponent(n)
+                guard let rec = try? Data(contentsOf: u), let r = read(rec) else { try? fm.removeItem(at: u); continue }
+                let conv = MTPipeBook.all().first { c in pairTag(c) == r.pair }
+                switch await lay(rec) {
+                case .left: try? fm.removeItem(at: u)
+                case .notLeft, .behind:
+                    if let conv { MTLocalCoinLedger.shared.whole.receive(r.coins, from: conv, ref: backPrefix + r.id, on: nil) }
+                    try? fm.removeItem(at: u)
+                case .unknown: continue
+                }
+            }
+        }
+        await scan(why: "launch")
+    }
+    @MainActor private static var scanning = false
+    @MainActor private static var again = false
+    @MainActor private static var scannedOnce = false
+    /// A PAY LEAVES ONLY AFTER A SCAN OF THIS LIFE (the Business): a pay laid before the app last ended -- its record taken, its
+    /// mark not yet saved -- is heard first (MTBusiness.heardTransfer), and never laid twice.
+    @MainActor static func scanBeforePay() async {
+        if !scannedOnce { await scanFresh(why: "pay") }
+    }
+    /// A scan that starts after the one in flight ends: what the node holds now is in the book when it returns.
+    @MainActor private static func scanFresh(why: String) async {
+        for _ in 0..<150 where scanning { try? await Task.sleep(nanoseconds: 100_000_000) }
+        await scan(why: why)
+    }
+    /// The doors asked for records: each chain node's door, then the phone's other doors (version 1 records of older builds).
+    private static func scanDoors() -> [String] {
+        var out = chainNodes.compactMap { n in door(ofNode: n.name) }
+        for d in doors() where chainNode(ofDoor: d) == nil { out.append(d) }
+        return out
+    }
+    /// RECEIVES: every pipe's tag asked on every node; a verified record from another key is a credit, a record from my own key my
+    /// own send from another device of the words -- each once, by its name; a version 2 record is believed only from its key's
+    /// chain node, so a record laid on another node (a fork a dishonest client tried) moves nothing.
+    @MainActor static func scan(why: String) async {
+        if scanning { again = true; return }
+        guard let me = myKeyTag else { return }
+        var conv: [String: String] = [:]
+        for c in MTPipeBook.all() { if let t = pairTag(c) { conv[hex(t)] = c } }
+        guard !conv.isEmpty else { return }
+        scanning = true
+        defer {
+            scanning = false
+            if again { again = false; Task { @MainActor in await scan(why: "again") } }
+        }
+        let tags = Array(conv.keys)
+        var got = 0, credited = 0, own = 0, bad = 0, foreign = 0
+        var seen = Set<String>()
+        for door in scanDoors() {
+            let node = chainNode(ofDoor: door)
+            for start in stride(from: 0, to: tags.count, by: 256) {
+                let part = Array(tags[start..<min(start + 256, tags.count)])
+                var since = 0
+                while true {
+                    let a = await ask(door + "/tx-pair", ["tags": part, "since": since])
+                    guard a.code == 200, let txs = a.obj?["txs"] as? [[String: Any]] else { break }
+                    for x in txs {
+                        guard let id = x["id"] as? String, !seen.contains(id),
+                              let b = (x["rec"] as? String).flatMap({ s in Data(base64Encoded: s) }) else { continue }
+                        got += 1
+                        guard let r = await Task.detached(priority: .utility, operation: { read(b) }).value, r.id == id,
+                              let c = conv[hex(r.pair)] else { bad += 1; continue }
+                        if r.version == 2, chainNode(of: r.from) != node { foreign += 1; continue }
+                        seen.insert(id)
+                        let book = MTLocalCoinLedger.shared.whole
+                        if r.from == me {
+                            if !book.holds(.send, refPrefix + r.id), book.retake(r.coins, to: c, ref: refPrefix + r.id) { own += 1 }
+                            MTBusiness.shared.heardTransfer(conv: c, record: r, own: true)
+                        } else {
+                            if book.receive(r.coins, from: c, ref: refPrefix + r.id, on: nil) { credited += 1 }
+                            if book.holds(.receive, refPrefix + r.id) { MTBusiness.shared.heardTransfer(conv: c, record: r, own: false) }
+                        }
+                    }
+                    let last = a.obj?["last"] as? Int ?? since
+                    guard txs.count == 512, since < last else { break }
+                    since = last
+                }
+            }
+        }
+        scannedOnce = true
+        MontanaP2PTrace.mark("coin_tx_scan", "why=\(why) pipes=\(conv.count) got=\(got) credited=\(credited) own=\(own) bad=\(bad) foreign=\(foreign)")
     }
 }

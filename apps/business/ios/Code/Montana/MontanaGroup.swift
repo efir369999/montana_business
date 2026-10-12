@@ -1296,7 +1296,7 @@ final class MTGroup {
             } else if g.mine {
                 return .wait   // the letter has not landed at the owner yet: the copy knocks again
             } else if words.hasPrefix(deleteMark) {
-                store.deletedMids.insert(target)
+                store.bury([target])
                 answersHeard.append(id)
                 return .held
             }

@@ -1684,7 +1684,6 @@ struct PrivacyView: View {
     @AppStorage("syncContactsToPhone") private var syncContacts = true
     @AppStorage(MontanaDiagConsent.key) private var diagShare = MontanaDiagConsent.birth   // the diary leaves only by this yes (08.10)
     @AppStorage(MTLinkPreviewBuilder.switchKey) private var linkPreviews = true   // the card of a link I send — my device reads that page
-    @AppStorage(MontanaAppleID.switchKey) private var appleOn = true   // the seed rides the Apple Account's keychain (28.09)
     @State private var presenceShared = MontanaPresencePrivacy.sharing
     @AppStorage(MTCoinShow.key) private var coinsShown = false   // the owner shows or hides their coins (04.10)
     @State private var localNetwork = MontanaP2PNode.meshDiscoverable   // the one mesh switch owns the concept
@@ -1697,7 +1696,6 @@ struct PrivacyView: View {
     // Privacy page, next to the seed phrase it erases (the author's word 18.09).
     @State private var confirmForget = false
     @State private var showSeed = false
-    @State private var appleWord = MontanaAppleID.word()   // what the Apple Account carries: this seed, another, none
     @Environment(UIState.self) private var ui
 
     /// A row in the phone-settings style: an icon in a coloured square, a name, the value on the right.
@@ -1863,29 +1861,6 @@ struct PrivacyView: View {
             }
             .listRowBackground(MTGlassRowPlate())
 
-            // THE SEED OF THE APPLE ACCOUNT (the author's word 28.09): the words ride the iCloud Keychain to every device signed in
-            // with the person's Apple Account, and a new one opens the seed from there. THE ROW UNDER THE SWITCH SPEAKS FOR THIS
-            // PHONE'S KEYCHAIN (the critic, 28.09): it says what was written here for the account, read at every appearance; whether
-            // iCloud carried it away no app can read, and the caption names the switch a person checks in iCloud's own settings.
-            Section {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 12) {
-                        icon("key.icloud.fill", .blue)
-                        Toggle("Identity in Apple Account", isOn: $appleOn)
-                            .onChange(of: appleOn) { _, v in MontanaAppleID.set(on: v); appleWord = MontanaAppleID.word() }
-                    }
-                    Text("The 24 words are written to the iCloud Keychain, which carries them to every device signed in with your Apple Account. Passwords & Keychain must be on in iCloud settings on both devices; the phone cannot see whether it is.")
-                        .font(.caption).foregroundColor(.gray)
-                }
-                HStack(spacing: 12) {
-                    icon("person.crop.circle.badge.checkmark", .gray)
-                    Text("Kept for the account").foregroundColor(.white)
-                    Spacer()
-                    Text(appleCarries).foregroundColor(.gray)
-                }
-            }
-            .listRowBackground(MTGlassRowPlate())
-
             Section {
                 NavigationLink { SeedShowView().montanaMotionMeter() } label: {
                     HStack(spacing: 12) {
@@ -1937,14 +1912,6 @@ struct PrivacyView: View {
         place.refresh()
         photosAccess = MTSystemAccess.photosWord
         contactsAccess = MTSystemAccess.contactsWord
-        appleWord = MontanaAppleID.word()
-    }
-    private var appleCarries: LocalizedStringKey {
-        switch appleWord {
-        case .mine(let others): return others == 0 ? "This identity" : "This identity and another"
-        case .others: return "Another identity"
-        case .none: return "None"
-        }
     }
 }
 
@@ -2037,7 +2004,6 @@ extension MontanaSeed {
         // Without the seed in storage there is no identity: everything else is derived, and at the
         // next launch there would be nothing to derive it from.
         guard MontanaSeed.setActive(mnemonic: acc.mnemonic) else { return false }
-        MontanaAppleID.publish()   // the account's reading of the same words, when the switch stands (28.09)
         // The tag of this device is derived from the seed, so the boundary that changes the seed
         // is the boundary that drops the tag. Placed here and not beside each caller: were it
         // beside the callers, a third caller would inherit the previous identity's tag in silence.
@@ -2055,7 +2021,7 @@ extension MontanaSeed {
 
     /// THE ONE DOOR INTO A PERSON (the critic, 28.09): the seed opens and the boundary between two people is crossed in
     /// the same act -- the twin correspondence is derived from the seed, and it changes when, and only when, the person
-    /// does. Three roads enter here: a birth, the 24 words, the Apple Account. The words' road once opened the seed and
+    /// does. Two roads enter here: a birth and the 24 words. The words' road once opened the seed and
     /// left the boundary where the previous person had left it.
     @discardableResult
     static func enter(_ acc: MontanaSeedKeys.Keys) -> Bool {
@@ -2079,8 +2045,7 @@ struct MontanaOnboardingView: View {
     var onDone: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var step = 0
-    @State private var montanaRoad = false                // the doors screen chose Montana: the three roads to a seed stand behind it (29.09)
-    @State private var mailOffered = false                // the service names the address's door (06.10): only then does it stand
+    @State private var montanaRoad = false                // the doors screen chose Montana: the two roads to a seed stand behind it (29.09)
     @State private var terms = false                      // the terms, opened from the doors' footer
     @State private var ground = false                     // the person's ground, chosen before the person is made (the author's word 30.09)
     @State private var bornKeys: MontanaSeedKeys.Keys?
@@ -2093,17 +2058,13 @@ struct MontanaOnboardingView: View {
     @State private var birthFailed = false
     @State private var copied = false
     @State private var glow = false   // golden radial glow of the logo (Montana style)
-    @State private var carried: [MontanaAppleID.Carried] = []   // the seeds the Apple Account carries, read while the first screen stands (28.09)
-    @State private var choosing = false                   // the account carries more than one seed: the person chooses
     @State private var refusal: LocalizedStringKey? = nil // the word of a refusal on the way back, spoken, never walked past (28.09)
     @State private var retry: (() -> Void)? = nil         // what «Try again» does
     @State private var nodeHost = ""                      // the person's own node, named beside the words
-    @State private var taking: Double? = nil              // a copy coming back from iCloud: frames filed, this phone's count
     @State private var takingWord: LocalizedStringKey = "Opening your identity…"
     @ObservedObject private var homeNode = HomeNodeWatch.shared   // the node's copy on its way back, for the bar
     @ObservedObject private var keep = MTKeeping.shared           // the parts coming back from the people one wrote to (08.10)
     @State private var barSince = Date()                          // when the bar first stood on the page: the time left is measured from it
-    @ObservedObject private var cloud = CloudWatch.shared         // iCloud's copy on its way back, in iCloud's count
     @ObservedObject private var seats = MTSeats.shared            // a person being added: the page stands on the road of the door (06.10)
     @State private var groundChosen = false                       // the new person chose a ground: the pages wear it from then on
 
@@ -2125,13 +2086,12 @@ struct MontanaOnboardingView: View {
                     // THE PAGE DOES NOT OPEN TWICE (the author's word 06.10.2026 ~16:01 MSK, the Messenger's 91e9b555: «from the side panel
                     // the login page reloads, and after the tap opens again»): a person being added (MTSeats.adding) already chose a door;
                     // the first screen that stands after the seat is emptied opens on that door's road, whichever page took the one-time word.
-                    case 0: if montanaRoad || (seats.adding && !seats.addingByPhone && !seats.addingByMail) { intro } else { doors }   // the doors first (the author's design 29.09), the Montana road behind
+                    case 0: if montanaRoad || (seats.adding && !seats.addingByPhone) { intro } else { doors }   // the doors first (the author's design 29.09), the Montana road behind
                     case 1: responsibility
                     case 2: seed
                     case 4: recover
                     case 5: takingBack
                     case 6: phone        // the number's page (Montana Business, 06.10)
-                    case 7: mail         // the address's page (06.10)
                     default: EmptyView()
                     }
                 } }.padding(24)
@@ -2147,9 +2107,7 @@ struct MontanaOnboardingView: View {
         .interactiveDismissDisabled()
         .onAppear {   // opened to make a second person: the road whose door was tapped beside the seated one
             if MTSeats.shared.takeMontanaRoad() { montanaRoad = true } else if MTSeats.shared.takePhoneRoad() { createSeed(then: 6) }
-            else if MTSeats.shared.takeMailRoad() { createSeed(then: 7) }
             else if seats.adding, seats.addingByPhone { adoptRoad(6) }
-            else if seats.adding, seats.addingByMail { adoptRoad(7) }
         }
         // THE GROUND COMES BEFORE THE PERSON (the author's word 30.09: «before the identity is made it shows the page choosing the
         // identity's ground, then that ground on every page of the making, up to the chats»): the very page of my page's ground,
@@ -2186,7 +2144,6 @@ struct MontanaOnboardingView: View {
         case 2: return { step = 1 }
         case 4: return { step = 0; recoverError = "" }
         case 6: return { step = 0 }   // the person born at the number's door stays this screen's own (guarded, own)
-        case 7: return { step = 0 }   // and so the person born at the address's door
         default: return nil
         }
     }
@@ -2206,7 +2163,7 @@ struct MontanaOnboardingView: View {
         // THE NUMBER'S PAGE OPENS AT ONCE (the author's word 06.10.2026 11:4x MSK: «the sign-in by number lags so long ... make
         // it work fast»): the person is born behind the page while the number is typed; the road of the number waits for the
         // birth (MontanaSeed.birth), never starts another.
-        if next == 6 || next == 7 { step = next }
+        if next == 6 { step = next }
         MontanaSeed.birth = Task.detached {
             let t0 = Date()
             let acc = MontanaSeedKeys.generate()
@@ -2218,7 +2175,7 @@ struct MontanaOnboardingView: View {
                 // The seed must land in storage: without it there is no identity, and the next
                 // launch has nothing to derive it from. This boundary's answer used to be
                 // discarded — the person walked on as born, then hit a screen that would not close.
-                let road = next == 6 ? " road=phone" : (next == 7 ? " road=mail" : "")
+                let road = next == 6 ? " road=phone" : ""
                 guard MontanaSeed.enter(acc) else {   // the seed and the boundary between two people, in one act
                     MontanaP2PTrace.mark("seed_born", "ms=\(ms) stored=0" + road)
                     birthFailed = true
@@ -2265,10 +2222,7 @@ struct MontanaOnboardingView: View {
                 privRow("point.3.connected.trianglepath.dotted", "No servers", "Your phone carries the messages itself")
             }
             Spacer()
-            // THE APPLE ACCOUNT'S DOOR STANDS ON THE PAGE OF OPENING (the author's word 29.09, 23:25: take the extra button about
-            // the Apple Account away from this page, it is in another place): opening an identity the account carries is
-            // opening, and it stands beside the words on the page Open identity (recover).
-            // EVERY ACT OF THE PATH IS A DOOR (the same word: the buttons in the new style of our OS): the one plate of the doors
+            // EVERY ACT OF THE PATH IS A DOOR (the author's word 29.09, 23:25: the buttons in the new style of our OS): the one plate of the doors
             // (MTLoginDoorStyle), the main act on the platform's blue glass, the second on its clear glass; gold is the sign's alone.
             Button { guarded(own: true) { if bornKeys == nil { ground = true } else { createSeed() } } } label: {
                 HStack(spacing: 8) {
@@ -2288,14 +2242,10 @@ struct MontanaOnboardingView: View {
     /// empty seat. Beside a person already seated, that person goes to the shelf first (MTSeats.makeRoom: parked, never
     /// wiped) and the first screen opens again on this road; only «Create» continues the person this very screen has just
     /// made, to their words.
-    private func guarded(own: Bool = false, phone: Bool = false, mail: Bool = false, _ act: @escaping () -> Void) {
+    private func guarded(own: Bool = false, phone: Bool = false, _ act: @escaping () -> Void) {
         guard MontanaSeed.hasSeed else { act(); return }
         if own, let b = bornKeys, MontanaSeed.mnemonic == b.mnemonic { act(); return }
-        MTSeats.shared.makeRoom(phone: phone, mail: mail)
-    }
-    /// The line of one seed in the chooser: when its record was written, and on how many devices.
-    private func carriedLine(_ c: MontanaAppleID.Carried) -> String {
-        c.at.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened, locale: MTLanguage.locale)) + (c.devices > 1 ? " · ×" + String(c.devices) : "")
+        MTSeats.shared.makeRoom(phone: phone)
     }
 
     var recover: some View {
@@ -2345,36 +2295,7 @@ struct MontanaOnboardingView: View {
                 }
             }
             .buttonStyle(MTLoginDoorStyle(tint: MontanaOctagon.platformBlue)).disabled(recovering)
-            if let first = carried.first {
-                // THE ACCOUNT ALREADY HOLDS A SEED (28.09): the first act on a new device of the same Apple Account is to go on
-                // as that person -- the seed opens, and the copy the account holds in iCloud comes back after it. More than one
-                // seed under the account (the critic, 28.09): the person chooses; nothing opens by the order of writing. It stands
-                // here since 29.09 (the author's word, 23:25: the extra button about the Apple Account leaves the first page):
-                // opening an identity the account carries is opening, beside the words; the word to replace a seed already held
-                // was given at the door into this page (guarded).
-                Button { if carried.count == 1 { openCarried(first.words) } else { choosing = true } } label: {
-                    Text("Continue with your Apple Account")
-                }
-                .buttonStyle(MTLoginDoorStyle()).disabled(creating || recovering)
-                .confirmationDialog("Which identity?", isPresented: $choosing, titleVisibility: .visible) {
-                    ForEach(carried, id: \.words) { c in
-                        // USER-DATA: the moment a record was written, and how many devices wrote it
-                        Button { openCarried(c.words) } label: { Text(verbatim: carriedLine(c)) }
-                    }
-                } message: {
-                    Text("Your Apple Account carries more than one identity of Montana. Choose the one to open on this phone.")
-                }
-            }
             Spacer()
-        }
-        .task {
-            // THE ACCOUNT IS ASKED WHILE THE PAGE STANDS (the critic, 28.09): the iCloud Keychain brings a record seconds or
-            // minutes after a person signs in on a new phone, and one reading at appearance left the button unborn until the
-            // page was left and entered again. The task ends with the page.
-            while !Task.isCancelled {
-                carried = MontanaAppleID.held()
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-            }
         }
     }
 
@@ -2450,79 +2371,15 @@ struct MontanaOnboardingView: View {
             }
         }
     }
-    /// THE SEED THE APPLE ACCOUNT CARRIES OPENS THIS DEVICE (28.09), and the copy the account holds in iCloud comes back
-    /// after it -- iCloud's own word says whether one is held; none held, the person is told and walks in with the seed.
-    func openCarried(_ words: String) {
-        guard !creating else { return }
-        creating = true
-        takingWord = "Opening your identity…"
-        step = 5
-        Task.detached {
-            let acc = MontanaSeedKeys.keys(from: words)
-            await MainActor.run {
-                creating = false
-                guard let acc, MontanaSeed.enter(acc) else {
-                    MontanaP2PTrace.mark("apple_id", "carried words refused")
-                    step = 4; carried = []   // back to the page the account's door stands on
-                    return
-                }
-                MontanaP2PTrace.mark("apple_id", "opened from the account")
-                MontanaBackup.shutIfNew()
-                takeFromCloud()
-            }
-        }
-    }
-    /// The copy the Apple Account holds in iCloud, taken back by the one road (CloudWatch, MontanaBackup.restore).
-    func takeFromCloud() {
-        takingWord = "Asking iCloud…"
-        step = 5
-        MontanaBackupCloud.ready { r in
-            guard r else {
-                return refuse("iCloud Drive is off on this device, or no Apple Account is signed in. The identity is open; a copy can be taken later in Settings.") { takeFromCloud() }
-            }
-            UserDefaults.standard.set(true, forKey: MontanaBackupCloud.switchKey)   // the account's copies are this person's too
-            CloudWatch.shared.start()
-            awaitCloudCopy(tries: 0)
-        }
-    }
-    /// iCLOUD'S FIRST ANSWER ON A NEW PHONE IS OFTEN EMPTY (the critic, 28.09): the copies arrive with the updates that follow
-    /// the first gathering. The copy is waited for, a few seconds at a time, and its absence is spoken, never walked past;
-    /// the person may go on without it at any moment (the button under the bar).
-    func awaitCloudCopy(tries: Int) {
-        let watch = CloudWatch.shared
-        watch.whenAnswered {
-            if let u = watch.url { return fetchCloud(u) }
-            guard tries != 6 else { return refuse("iCloud holds no copy of this identity yet.") { awaitCloudCopy(tries: 0) } }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { awaitCloudCopy(tries: tries + 1) }
-        }
-    }
-    func fetchCloud(_ u: URL) {
-        takingWord = "Taking your history back"
-        CloudWatch.shared.fetch(u) { f in
-            switch f {
-            case .failure(let e): refuse(e.spoken(by: .cloud)) { fetchCloud(u) }
-            case .success(let url):
-                taking = 0
-                MontanaBackup.restore(from: url, progress: { taking = $0 }) { res in
-                    taking = nil
-                    switch res {
-                    case .success: MontanaBackupCloud.tookBack(url); onDone()
-                    case .failure(let e): refuse(e.spoken(by: .cloud)) { fetchCloud(u) }
-                    }
-                }
-            }
-        }
-    }
     /// EVERY REFUSAL IS SPOKEN (the critic, 28.09): the word stands in an alert with «Try again» and «Continue without the copy».
     func refuse(_ word: LocalizedStringKey, again: @escaping () -> Void) {
         retry = again
         refusal = word
     }
-    private var cloudShare: Double? { if case .coming(let f?) = cloud.fetching { return f } else { return nil } }
     /// The person may walk on while the opening of the words (their stretch) is not under way. The copy of the people one wrote to
     /// goes on by itself behind them (the author's word 09.10.2026: «Continue -- the restore goes on in the background»): its one
-    /// owner is MTKeeping, not this page; a copy from the node or from iCloud is this page's and is waited for.
-    private var canGoOn: Bool { !creating && homeNode.restoring == nil && taking == nil }
+    /// owner is MTKeeping, not this page; a copy from the node is this page's and is waited for.
+    private var canGoOn: Bool { !creating && homeNode.restoring == nil }
     /// The copy the people one wrote to gave back, being laid: its share of frames, the engine's own count.
     private var keepLaying: Double? { if case .laying(let f) = keep.taking { return f } else { return nil } }
     /// THE ONE SHARE OF THE COPY'S ROAD (09.10.2026): the light copy coming down is the first half, its laying the second; the parts
@@ -2547,7 +2404,7 @@ struct MontanaOnboardingView: View {
     /// THE COPY KEPT BY THE PEOPLE ONE WROTE TO (MTKeeping, 08.10): with no node named, the words call the pipe of every slot; the
     /// page shows the parts in hand, and the person may walk on at any moment -- the copy is laid whenever it stands, merged.
     func takeFromKeepers() {
-        takingWord = "Asking the people you write to…"
+        takingWord = "Restoring the identity chain"   // the author's word 11.10.2026 17:13 MSK: the person's chain comes back first
         step = 5
         keep.onboardingWaits = true
         // THE LIGHT COPY LETS THE PERSON IN (App: «once the light copy is laid»): the full copy follows from the keepers.
@@ -2573,7 +2430,7 @@ struct MontanaOnboardingView: View {
             // THE BAR FROM THE FIRST FRAME (the author's word 09.10.2026 11:3x MSK: «the progress bar must show at once, now it spins
             // long before it comes; under it the approximate time of the restore»): nothing measured yet is a bar at zero, never a
             // spinner, and the time left is said once it can be measured.
-            let f = homeNode.fetching ?? homeNode.restoring ?? cloudShare ?? taking ?? keepShare ?? 0
+            let f = homeNode.fetching ?? homeNode.restoring ?? keepShare ?? 0
             ProgressView(value: f).padding(.horizontal, 24)
             Text(verbatim: String(Int(f * 100)) + "%").foregroundColor(.gray).font(.caption)   // USER-DATA: a share
             if let left = timeLeft(f) {
@@ -2626,23 +2483,6 @@ struct MontanaOnboardingView: View {
                 .controlSize(.large)
                 .tint(MontanaOctagon.platformBlue)
                 .frame(maxWidth: 420)
-                // THE ADDRESS'S DOOR (the author's word 06.10.2026 17:5x MSK: «a second sign-in by e-mail»): the second way, under the
-                // number's, on the platform's bordered capsule; it stands only while the service names the door (no dead door).
-                if mailOffered {
-                    Button {
-                        MontanaP2PTrace.mark("first_screen", "door=mail")
-                        guarded(own: true, mail: true) { createSeed(then: 7) }
-                    } label: {
-                        Label("Continue with email", systemImage: "envelope.fill")
-                            .font(.body.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
-                    .controlSize(.large)
-                    .tint(.white)
-                    .frame(maxWidth: 420)
-                }
                 // MONTANA IS THE ADDITIONAL WAY (the author's word 06.10.2026 17:5x MSK: «and Montana as an additional way already opens on
                 // the tap»): last of the doors; its tap opens the Montana road.
                 // ONE LOGIN PAGE, at the first launch and when a person is added from the drawer (the author's word 29.09 evening).
@@ -2663,7 +2503,6 @@ struct MontanaOnboardingView: View {
                 .font(.caption2).foregroundColor(.gray).tint(Color.white.opacity(0.8))
                 .multilineTextAlignment(.center).padding(.top, 14).padding(.horizontal, 12)
         }
-        .task { mailOffered = await MTBizService.mailDoor() != nil }
         .environment(\.openURL, OpenURLAction { url in
             if url.scheme == "montana", url.host == "terms" { terms = true; return .handled }
             if url.scheme == "montana", url.host == "privacy", let page = URL(string: MontanaSafety.privacy) { return .systemAction(page) }
@@ -2683,20 +2522,6 @@ struct MontanaOnboardingView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 24)
             MTBizPhoneDoor(onConfirmed: { MTSystemAccess.askContacts(); step = 3 }, onWithout: { step = 3 })
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    /// THE ADDRESS'S PAGE (the author's word 06.10.2026 17:5x MSK: «you enter the address, you get our code by mail»): the person
-    /// was born at the door; the title, the field of the address and «Next», then the code from the letter. Confirmed, the path
-    /// goes on to the name (step 3) and into the app.
-    var mail: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Join us via email").font(.largeTitle.bold()).foregroundColor(.white)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("We’ll send a code to your email").font(.title3).foregroundColor(.white)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.bottom, 24)
-            MTBizMailDoor(onConfirmed: { MTSystemAccess.askContacts(); step = 3 })
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2734,7 +2559,7 @@ struct MTDoorLabel<Glyph: View>: View {
 /// the thin material with the tinted rim before, so a door reads as a door on every device. The press is the platform's own.
 /// EVERY ACT OF THE PATH STANDS ON IT (the author's word 29.09, 23:25: the buttons in the new style of our OS, and so every
 /// next page up to the chats): the doors and the path's acts from the first screen to the chats -- create, open, show the
-/// words, copy them, restore, open from the Apple Account, go on without the copy, agree to the terms -- wear this one plate,
+/// words, copy them, restore, go on without the copy, agree to the terms -- wear this one plate,
 /// never a fill of their own. A tint is a door's own colour or the page's main act (the platform's blue, the system's
 /// prominent glass); none -- the platform's clear glass, a second act. The plate owns the size (52 points high, 420 wide at
 /// most, the whole capsule the target), the word's face and the dimmed look of an act not yet open.

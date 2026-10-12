@@ -551,7 +551,10 @@ final class MontanaP2PNode: ObservableObject {
         let callPeer: String? = MontanaCall.stateSnapshot == "idle" ? nil : MontanaCall.peerSnapshot
         // An IPv6 door of theirs is dialled only from an IPv6 of our own: without one the dial
         // dies with «Network is down» before it leaves, and says so once a minute per address.
-        let v6Here = MontanaSelfEndpoint.candidates().contains { $0.contains(":") }
+        // AND ONLY WHILE THE SYSTEM'S PATH CARRIES IPv6 (12.10.2026, the iPhone 17 during the 11:00 MSK call: dial_waiting «Network is
+        // down» path=unsatisfied every five to sixty seconds, 07:58:45-08:01:40Z): an address of our own the list still names is no
+        // route; the path monitor's own word is, and a change of the path asks again.
+        let v6Here = Self.pathCarriesV6 && MontanaSelfEndpoint.candidates().contains { $0.contains(":") }
         for e in MontanaOverlayBook.shared.allEntries() where !e.ref.isEmpty {
             if let p = callPeer, e.ref != p { continue }   // a call stands: every other correspondent waits
             if let ov = e.overlay, MontanaP2PDirect.shared.hasLiveChannel(overlay: ov) {
@@ -599,11 +602,19 @@ final class MontanaP2PNode: ObservableObject {
             + "wifi=\(wifiOn ? 1 : 0) lte=\(lteOn ? 1 : 0) ble=\(btPeers.count)")
     }
 
+    /// Whether the system's current path carries IPv6 (NWPath.supportsIPv6), written by the path monitor at every update.
+    private static let pathLock = NSLock()
+    private static var _pathCarriesV6 = true
+    private static var pathCarriesV6: Bool {
+        get { pathLock.lock(); defer { pathLock.unlock() }; return _pathCarriesV6 }
+        set { pathLock.lock(); _pathCarriesV6 = newValue; pathLock.unlock() }
+    }
     private func startPathMonitor() {
         guard pathMonitor == nil else { return }
         let m = NWPathMonitor()
         m.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
+            Self.pathCarriesV6 = path.supportsIPv6   // every update, not only up and down: the family can leave with the network up
             let up = path.status == .satisfied
             // We react ONLY to a real network up/down transition. Flicker of the interface list
             // (Wi-Fi plus cellular) does NOT trigger a redial: a forced redial on every "change" used

@@ -30,10 +30,8 @@ final class MTSeats: ObservableObject {
     @Published private(set) var canReturn = false        // the layer is empty and somebody waits on the shelf
     @Published private(set) var adding = false           // the first screen stands to make a second person
     @Published private(set) var addingByPhone = false    // ... and the door tapped was the number's: the road stands while adding (06.10)
-    @Published private(set) var addingByMail = false     // ... or the address's (06.10)
     private var montanaRoad = false                      // the first screen after making room opens on the Montana road
     private var phoneRoad = false                        // ... or on the number's road (Montana Business, 06.10)
-    private var mailRoad = false                         // ... or on the address's road (06.10)
     private init() { refresh() }
 
     struct Seat: Codable, Equatable, Identifiable {
@@ -294,7 +292,6 @@ final class MTSeats: ObservableObject {
         E2E.forgetDeviceTag()
         SeedScope.reread(restored: false)   // the wall too: it loads on the forgotten seed's word, which is not spoken here
         Task { @MainActor in MTCoinBook.reread() }   // the lifted person's own coins, never the book of the one who left (04.10)
-        MontanaAppleID.publish()
         NotificationCenter.default.post(name: .montanaSeedOpened, object: nil)
         MontanaWakePush.registerConvs()
         MontanaP2PNode.shared.reconnectNow()
@@ -396,11 +393,66 @@ final class MTSeats: ObservableObject {
             return shelfSeal(m, metFile(id), metBinding)
         }
     }
+    /// THE PAIR OF TWO PERSONS OF THIS PHONE (the author's word 11.10.2026 17:13 MSK, No.62: «with several accounts, an option in a
+    /// transfer to send to oneself on another account»): the person seated meets a person on the shelf here, on the phone that holds
+    /// both -- an encapsulation to the shelf person's card, accepted by that card's own key -- so the pipe is born in the seated
+    /// book and among the pipes the shelf person was met by, with no node in the meeting. It rides the box like every pipe, rings
+    /// nobody (MTShelfPost.wakePairs), and the shelf's pickup files its letters for the person who waits. A pipe the two already
+    /// share is found first. Called off the main thread: the shelf's files are written on the shelf's own queue.
+    static func pairWithShelf(_ id: String) -> String? {
+        let b = book()
+        guard b.step == nil, b.active != id, let seat = b.seats.first(where: { s in s.id == id }), let p = shelfPerson(seat) else {
+            MontanaP2PTrace.mark("seat_pair", "refused seat=" + id + " -- not waiting on the shelf")
+            return nil
+        }
+        let theirs = Set(p.pipes.values)
+        if let have = MTPipeBook.all().first(where: { c in MTPipeBook.secret(for: c).map { s in theirs.contains(s) } ?? false }) {
+            return have
+        }
+        for body in p.invites.values where 1184 <= body.count {
+            let root = Data(body.prefix(1184))
+            guard let sk = p.cardKeys[root.base64urlNoPad], let met = MontanaFirstContact.meet(contactRoot: root) else { continue }
+            guard let secret = MontanaFirstContact.accept(ciphertext: met.ciphertext, contactSecret: sk, contactRoot: root),
+                  MTPipeBook.secret(for: met.reference) == secret, meetOnShelf(id, ref: met.reference, secret: secret) else {
+                MTPipeBook.forget(met.reference)
+                continue
+            }
+            MontanaP2PTrace.mark("seat_pair", "born seat=" + id + " conv=" + String(met.reference.prefix(10)))
+            return met.reference
+        }
+        MontanaP2PTrace.mark("seat_pair", "refused seat=" + id + " -- no card of theirs opens")
+        return nil
+    }
+    /// A TRANSFER TO ONE'S OWN OTHER ACCOUNT LANDS IN THE SAME STEP (No.65, point 0; the author's words 12.10.2026 13:2x MSK: «either
+    /// the coins left or not, there is no third»): T1's 4 105 470 coins of 11.10 rode a letter to a person on the shelf, who was
+    /// seated, never took it and was forgotten -- the coins stood on the way. The record that left the seated book is laid at once as
+    /// the receiving person's own move in their book on the nodes, by their own words (MTCoinVault.lay, the shelf's road), under the
+    /// very name their scan credits it by (tx: and the record's id): it stands in their book whether or not they are seated again,
+    /// on any device of their words, and their scan finds it already taken. Called off the main thread.
+    static func landTransfer(_ id: String, coins: Int, record tx: String, conv: String) async -> Int {
+        guard let rec = record(id), !rec.words.isEmpty, let e = MontanaSeedKeys.entropyFrom(mnemonic: rec.words), e.count == 32 else { return 0 }
+        let move = MTCoinEntry(k: .receive, c: coins, ref: MTCoinTx.refPrefix + tx, peer: conv, on: nil, at: Date().timeIntervalSince1970)
+        let laid = await MTCoinVault.lay([move], entropy: e)
+        MontanaP2PTrace.mark("seat_coin", "seat=" + id + " coins=" + String(coins) + " rows=" + String(laid))
+        return laid
+    }
     /// THE PERSON SEATED TAKES WHAT THE SHELF RECEIVED FOR THEM: the rows go into their inbox as a pickup's rows (the landing
     /// door opens them), and only then leave the shelf's file. Asked at the lift and at every pickup of the person seated.
     static func landShelf() {
         shelfIO.async {
             guard let id = book().active else { return }
+            // THE PIPES THE PERSON WAS MET BY WHILE WAITING ARE BORN IN THEIR OWN BOOK (the author's word 11.10.2026 19:0x MSK: «at
+            // 18:51 I sent an internal transfer of 4 million in Business, they did not come»). T1, 15:51:48Z: the person seated paid
+            // a person on the shelf on the pipe born on this phone (pairWithShelf), which stood only among the shelf's met pipes; the
+            // receiver was seated seven seconds later and never listened on it -- a pipe met by a card is born at the lift by its
+            // first letter's row, a pipe born here had no such row. Every met pipe is born now at the lift and at every pickup.
+            let met = shelfSealed(metFile(id), metBinding)
+            if !met.isEmpty {
+                let born = met.values.filter { secret in MTPipeBook.establish(secret: secret) != nil }.count
+                if born == met.count { try? FileManager.default.removeItem(at: metFile(id)) }
+                MontanaP2PTrace.mark("shelf_met", "seat=" + id + " pipes=" + String(born) + " of " + String(met.count))
+                if 0 < born { MontanaWakePush.registerConvs() }
+            }
             let rows = shelfInbox(id)
             guard !rows.isEmpty else { return }
             DispatchQueue.main.async {
@@ -430,26 +482,36 @@ final class MTSeats: ObservableObject {
         montanaRandom(4).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// A CALL HOLDS THE SEAT (11.10.2026, No.61): a move clears the seat -- the store, every pipe, the device's tag -- while a
+    /// call standing on them lives on with no road for its words and a device word that changes mid-call. While a call or a
+    /// group's room stands nobody moves: the refusal is written, and the drawer stays as it was (this file shows no refusal
+    /// of its own on the screen -- the seat simply does not change).
+    private func refusedForCall(_ road: String) -> Bool {
+        guard MontanaCall.isBusy else { return false }
+        MontanaP2PTrace.mark("seat_move", "REFUSED a call stands road=" + road)
+        return true
+    }
+
     /// The drawer's face of a person on the shelf.
     func switchTo(_ id: String) {
         let b = Self.book()
         guard !moving, b.active != id, b.seats.contains(where: { $0.id == id }) else { return }
+        guard !refusedForCall("switch") else { return }
         move(to: id)
     }
     /// The Montana door beside a person already seated: the seat is emptied, and the first screen stands on the Montana road --
     /// or on the number's road, when the door of the number was the one tapped (Montana Business, 06.10).
-    func makeRoom(phone: Bool = false, mail: Bool = false) {
+    func makeRoom(phone: Bool = false) {
         guard !moving, MontanaSeed.hasSeed else { return }
-        montanaRoad = !phone && !mail
+        guard !refusedForCall("make-room") else { return }
+        montanaRoad = !phone
         phoneRoad = phone
-        mailRoad = mail
         addingByPhone = phone
-        addingByMail = mail
         adding = true
         move(to: nil)
     }
     /// The first screen closed: a person was made.
-    func doneAdding() { adding = false; addingByPhone = false; addingByMail = false }
+    func doneAdding() { adding = false; addingByPhone = false }
     /// The first screen asks once whether it was opened to make a person (the Montana road) rather than to choose a door.
     func takeMontanaRoad() -> Bool {
         defer { montanaRoad = false }
@@ -460,17 +522,13 @@ final class MTSeats: ObservableObject {
         defer { phoneRoad = false }
         return phoneRoad
     }
-    /// The same question for the address's road.
-    func takeMailRoad() -> Bool {
-        defer { mailRoad = false }
-        return mailRoad
-    }
     /// The first screen's cross: the person who waited on the shelf last comes back.
     func returnToLast() {
         guard !moving, !MontanaSeed.hasSeed else { return }
+        guard !refusedForCall("return") else { return }
         let b = Self.book()
         guard let id = b.last.flatMap({ l in b.seats.first { $0.id == l }?.id }) ?? b.seats.first?.id else { return }
-        adding = false; addingByPhone = false; addingByMail = false
+        adding = false; addingByPhone = false
         move(to: id)
     }
 
@@ -503,6 +561,7 @@ final class MTSeats: ObservableObject {
         settled()
     }
     private func parkThenLift(from: String?, to target: String?, t0: Date) {
+        ChatStore.badgeLine.sync {}   // MAIN-SAFE-SYNC: two keychain writes at most, never a wait on main; the leaving count lands before the park reads it
         let ground = target == nil && from != nil ? MTWallpaper.carry() : nil   // a seat emptied for a new person keeps the cover (03.10)
         if let from {
             // The coins of the person leaving are on disk in their own folder before it moves (the coin audit's fourth point).

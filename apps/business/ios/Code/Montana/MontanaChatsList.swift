@@ -1308,7 +1308,7 @@ struct ChatsListView: View {
                 guard let asked = note.userInfo?["address"] as? String else { return }
                 let ref = MTSamePair.root(asked)   // a folded pipe opens the conversation it speaks for (24.09)
                 UserDefaults.standard.removeObject(forKey: "pendingOpenChat")
-                store.deletedChats.remove(ref)   // reopening/scanning clears the deletion (otherwise the chat is hidden and incoming doesn't arrive)
+                if store.deletedChats.contains(ref) { store.deletedChats.remove(ref) }   // reopening/scanning clears the deletion (otherwise the chat is hidden and incoming doesn't arrive)
                 MontanaDeliveryEngine.shared.drainAll()   // whatever already arrived lands in the store before the conversation opens
                 let existing = row(for: ref)
                 // A GROUP'S ROW IS THE GROUP'S OWN (MTGroup): a banner tapped before its invitation landed opens the list, never a

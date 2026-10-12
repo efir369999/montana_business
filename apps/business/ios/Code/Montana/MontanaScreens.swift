@@ -496,6 +496,8 @@ struct ScanMeetingView: View {
     @State private var done = false
     /// What the meeting answered when it did not open — said to the face, as the link's road says it.
     @State private var verdict: String?
+    /// A code read, waiting for the person to choose the Montana app that opens it (MTSiblingApps).
+    @State private var choosing: String?
     var body: some View {
         ZStack {
             QRScannerView { code in
@@ -508,21 +510,11 @@ struct ScanMeetingView: View {
                     return
                 }
                 done = true
-                MontanaP2PTrace.mark("scan_code", "an introduction -- meeting")
-                Task {
-                    let out = await MontanaMeeting.meet(code)
-                    await MainActor.run {
-                        // A MEETING THAT DID NOT OPEN IS SAID (23.09): the scanner stood silent and the person held the
-                        // code in front of it without knowing why nothing happened. The words are the link road's own.
-                        switch out {
-                        case .opened(let ref): onFound(ref)
-                        case .spent: verdict = "Invitation expired. Ask for a new code."
-                        case .refused: verdict = "The invitation could not be opened. Check the link or try again."
-                        case .nameless: verdict = "Nobody holds this name."
-                        case .ownName: verdict = "This is your own name."
-                        }
-                    }
-                }
+                // WHICH MONTANA OPENS IT (MTSiblingApps, the author's word 11.10.2026 17:13 MSK): with another Montana app on this
+                // phone the code's link is offered to it beside this one; a code that is no link opens here.
+                let link = MontanaCard.text(fromQR: code) ?? code
+                if URL(string: link)?.scheme != nil, !MTSiblingApps.others.isEmpty { choosing = link; return }
+                meetHere(code)
             }.ignoresSafeArea()
             VStack {
                 Spacer()
@@ -531,10 +523,40 @@ struct ScanMeetingView: View {
             }
         }
         .navigationTitle("Scan code").navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(Text("Open in"), isPresented: Binding(
+            get: { choosing != nil }, set: { if !$0 { if choosing != nil { done = false }; choosing = nil } }), titleVisibility: .visible) {
+            Button { if let c = choosing { choosing = nil; meetHere(c) } } label: {
+                Text(verbatim: MTSiblingApps.ownName)   // USER-DATA: the product's own name
+            }
+            ForEach(MTSiblingApps.others) { app in
+                Button { if let c = choosing { MTSiblingApps.open(app, link: c) }; choosing = nil; done = false } label: {
+                    Text(verbatim: app.name)   // USER-DATA: the product's own name
+                }
+            }
+            Button("Cancel", role: .cancel) { choosing = nil; done = false }
+        }
         // Closing the verdict lets the scanner take a code again.
         .alert(Text(LocalizedStringKey(verdict ?? "")), isPresented: Binding(
             get: { verdict != nil }, set: { if !$0 { verdict = nil; done = false } })) {
             Button("OK", role: .cancel) { verdict = nil; done = false }
+        }
+    }
+    /// The meeting by this app: the code met here, and the conversation it begins opens.
+    private func meetHere(_ code: String) {
+        MontanaP2PTrace.mark("scan_code", "an introduction -- meeting")
+        Task {
+            let out = await MontanaMeeting.meet(code)
+            await MainActor.run {
+                // A MEETING THAT DID NOT OPEN IS SAID (23.09): the scanner stood silent and the person held the
+                // code in front of it without knowing why nothing happened. The words are the link road's own.
+                switch out {
+                case .opened(let ref): onFound(ref)
+                case .spent: verdict = "Invitation expired. Ask for a new code."
+                case .refused: verdict = "The invitation could not be opened. Check the link or try again."
+                case .nameless: verdict = "Nobody holds this name."
+                case .ownName: verdict = "This is your own name."
+                }
+            }
         }
     }
 }

@@ -100,7 +100,8 @@ enum MontanaP2PTrace {
         // silent session, a refused description — each is a breakdown the author asked to see in
         // the hour it happens, not with the next quarter-hour shipment.
         case "wake_verdict":
-            return !kv.hasSuffix("verdict=ok")
+            // A ring the system held (the person's Focus) is no breakdown of ours (12.10.2026, MontanaWakeDoor).
+            return !kv.hasSuffix("verdict=ok") && !kv.hasSuffix("verdict=held")
         case "call_dbg":
             return kv.contains("did not start") || kv.contains("failed to start") || kv.contains("SILENT")
                 || kv.contains("ERROR") || kv.contains("refused") || kv.contains("FAILED") || kv.contains("denied")

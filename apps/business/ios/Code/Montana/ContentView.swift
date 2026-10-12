@@ -439,6 +439,7 @@ struct RootView: View {
             // 05.09 — every phase change is a line: «folded by itself» was invisible in the diary.
             MontanaP2PTrace.mark("scene_phase", phase == .background ? "background" : (phase == .active ? "active" : "inactive"))
             if phase == .background {
+                MTAppAway.left()
                 MTForeground.active = false
                 E2E.shared.persistHistory()          // force-save history (debounce may not have fired)
                 MTBoard.shared.flush()               // the wall's drafts and the posts on their way, before the run may die (25.09)
@@ -505,7 +506,13 @@ struct RootView: View {
                 // folded state IS the share's construction (SSOT: only the person unfolds it
                 // through our pill) — the broadcast picker's dismissal re-activates the scene
                 // and this line used to unfold the call by itself.
-                if CallUIModel.shared.state != "idle", !CallUIModel.shared.screenSharing {
+                // THE CALL UNFOLDS ONLY WHEN THE APP COMES BACK FROM ELSEWHERE (the author's word 11.10.2026 18:5x MSK: «on
+                // Margarita's iPhone 13 the call screen does not fold, on Revaz's too, on T1 fine -- what works for me must work the
+                // same for everyone»): every return to active unfolded a folded call, an instant of inactive with no background
+                // included -- the shade, the control centre, a system question. Margarita's phone, iOS 18.1.1, 15:39:47Z: 0.4 s
+                // inactive, «unfolded by=app-active», and the call she had folded at 15:18 stood full again. The system pill brings
+                // the app back from the background; a glance that never left keeps the fold the person set.
+                if MTAppAway.back(), CallUIModel.shared.state != "idle", !CallUIModel.shared.screenSharing {
                     CallUIModel.shared.fold(false, why: "app-active")
                 }
                 // The call's window over other apps goes with the app's return (24.09: seen on two screens).
@@ -4702,4 +4709,16 @@ extension Array {
 
 extension PHAsset: @retroactive Identifiable {
     public var id: String { localIdentifier }
+}
+
+/// Whether the app came back from the background since the last activation: an instant of inactive is no return (the call's
+/// fold, 11.10.2026). Written and read on the main thread by the scene's one road of phases.
+enum MTAppAway {
+    private static var away = false
+    static func left() { away = true }
+    /// The activation asks once: true when the app had gone to the background, and the mark is spent.
+    static func back() -> Bool {
+        defer { away = false }
+        return away
+    }
 }

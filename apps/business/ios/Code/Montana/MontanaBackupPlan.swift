@@ -410,7 +410,7 @@ struct CopyFilesPage: View {
     private func delete(_ file: String) {
         guard let store = ChatStore.live else { return }
         let ls = inventory.letters[file] ?? []
-        for l in ls { store.deleteLocally(chat: l.chat, l.msg) }
+        store.deleteLocally(ls)   // one tombstone write and one history write for every letter naming the file
         store.sweepMediaFiles()
         plan.skipFiles.removeAll { $0 == file }
         inventory.forget(file)

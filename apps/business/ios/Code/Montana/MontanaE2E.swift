@@ -63,7 +63,7 @@ enum MTPeerLinks {
     /// The link, while its day runs.
     static func fresh(_ conv: String) -> String? {
         guard let link = links()[conv], let at = born()[conv] else { return nil }
-        return Date().timeIntervalSince1970 - at < MontanaCard.cardLifetimeSeconds ? link : nil
+        return Date().timeIntervalSince1970 - at < MontanaCard.cardLifetimeSeconds ? MontanaCard.onOwnSite(link) : nil
     }
 }
 
@@ -1116,6 +1116,9 @@ final class E2E {
                                    n: sig.ctrl == "call" ? E2E.myDisplayName() : nil,
                                    s: (sig.ctrl == "call" || sig.ctrl == "call-gone") ? sig.callSeed : nil, e: named))
         }
+        let me = MontanaCall.deviceWord(epoch: epoch)
+        let addressed = (sig.targetDevice ?? "").isEmpty ? nil : sig.targetDevice
+        for i in msgs.indices { msgs[i].d = me.isEmpty ? nil : me; msgs[i].to = addressed }
         guard let data = try? JSONEncoder().encode(msgs) else {
             NSLog("[call] signal not encoded — the peer will never hear this ring")
             return
@@ -1169,13 +1172,19 @@ final class E2E {
                 }
             }
             // «call-gone» names the call it is about by its epoch in «s» (24.09) — its own door, beside the seed's.
+            // A WORD FOR ANOTHER DEVICE OF THIS PERSON IS NOT THIS DEVICE'S (11.10.2026, No.60): the pipe and the node's lane carry
+            // every word of the pair to every device of the seed; a word addressed to one of them is read by that one alone.
+            if let to = cs.to, !to.isEmpty, let e = cs.e, !e.isEmpty, to != MontanaCall.deviceWord(epoch: e) {
+                MontanaP2PTrace.markFolded("sig_rx", "another device's ctrl=\(cs.ctrl)", window: 30, key: "dev:" + cs.ctrl)
+                continue
+            }
             if cs.ctrl == "call-gone" {
-                MontanaCall.shared.handleSignal(from: peer, device: "", ctrl: cs.ctrl, sdp: nil, candidate: nil,
+                MontanaCall.shared.handleSignal(from: peer, device: cs.d ?? "", ctrl: cs.ctrl, sdp: nil, candidate: nil,
                                                 video: nil, caps: nil, callSeed: cs.s, ts: cs.ts)
                 continue
             }
             // The name rides INTO the machine with the word (onCallerIdentity, one door).
-            MontanaCall.shared.handleSignal(from: peer, device: "", ctrl: cs.ctrl,
+            MontanaCall.shared.handleSignal(from: peer, device: cs.d ?? "", ctrl: cs.ctrl,
                 sdp: cs.sdp, candidate: cs.candidate, video: cs.video, caps: cs.caps,
                 callSeed: cs.ctrl == "call" ? cs.s : nil, ts: cs.ts, candidates: cs.candidates, reason: cs.rsn,
                 name: cs.ctrl == "call" ? cs.n : nil)
@@ -1223,7 +1232,8 @@ final class E2E {
             // number of its own: a three-second guillotine cut the walk while it still stood on
             // a dead door, threw the real «200» away and told the person «not reachable»
             // (13.09 09:08:03). The walk answers on every path; this line only guards a hang.
-            DispatchQueue.global().asyncAfter(deadline: .now() + MontanaWakePush.knockBudgetS(for: "notify")) { fire(-1) }
+            // A pair in first contact walks two roads, the pipe's tag and then the card's (No.63): the walk's own bound, once per road.
+            DispatchQueue.global().asyncAfter(deadline: .now() + MontanaWakePush.knockBudgetS(for: "notify") * Double(MontanaWakePush.ringRoads(peer))) { fire(-1) }
         }
         // AND AS A LETTER: for an unconfirmed pipe (a call right after QR) the voip wake does
         // not exist by construction — the peer has no secret yet, nothing to listen on the
@@ -1321,6 +1331,12 @@ final class E2E {
         // against its new one. Every word names its call here, and the receiver buries a word of a call it does not live.
         // Old builds skip the key; a word without it is an old build's, judged as before.
         var e: String?
+        // WHICH DEVICE SPOKE, AND WHICH ONE THE WORD IS FOR (11.10.2026, No.60): one person on several devices of one seed is one
+        // correspondent to the pipe, and the call could not tell its devices apart -- the end of the ringing one closed the call
+        // the other held. «d» is the speaker's word for this call (MontanaCall.deviceWord), «to» the one it is addressed to.
+        // Old builds skip both keys; a word without «d» is an old build's, judged as before.
+        var d: String?
+        var to: String?
     }
 
     // The recipient could not decrypt (chain desync) → we ask the sender to recreate the session.

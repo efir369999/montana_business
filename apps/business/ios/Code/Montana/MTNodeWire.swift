@@ -69,7 +69,7 @@ enum MTNodeWire {
     /// shape; the landing door became the third writer, so the shape moved here (SSOT-CONSOLIDATE, 18.09).
     static let envelopeSize = 2048
     static func letterHead(mid: String, text: String, name: String, glyph: String,
-                           quoteText: String? = nil, quoteMid: String? = nil) -> Data {
+                           quoteText: String? = nil, quoteMid: String? = nil, author: Data? = nil, secret: Data? = nil) -> Data {
         var body = Data(mid.utf8); body.append(0); body.append(contentsOf: text.utf8); body.append(0)
         body.append(contentsOf: name.utf8); body.append(0)
         body.append(contentsOf: glyph.utf8); body.append(0)
@@ -79,12 +79,66 @@ enum MTNodeWire {
             tail.append(contentsOf: (quoteMid ?? "").utf8); tail.append(0)
             if body.count + tail.count <= envelopeSize { body.append(tail) }
         }
-        return body
+        // A head that carries no card is signed here by its author (withAuthor); the app's road signs after the card's tail.
+        guard let secret else { return body }
+        return withAuthor(body, key: author, secret: secret, mid: mid, text: text)
     }
     /// One size for every envelope — the node cannot tell letter lengths apart. Larger — nil.
     static func padEnvelope(_ body: Data) -> Data? {
         guard body.count <= envelopeSize else { return nil }
         var b = body; b.append(Data(count: envelopeSize - body.count)); return b
+    }
+    // ── THE LETTER'S AUTHOR IS THE PERSON, NOT THE DEVICE (the author's words 11.10.2026 16:4x and 17:13 MSK, No.61-62: «the
+    // avatar is determined by the seed phrase, the whole chain of time»; «the whole architecture is built by the chain of the
+    // person and restored by it»). A pipe's secret is held by every device of one person and by the correspondent, and a letter
+    // named no author: T3 on T1's words announced its face to 36 correspondents, the same words reached T1 on the same pipes,
+    // and T1 wore its own face as theirs (dfd4c5dc). The eighth field names the author by the person's words: HMAC-SHA-256
+    // under a branch of the master seed only the person's devices derive, over the pipe's secret, the letter's name and its
+    // words, cut to sixteen bytes. Every device of the person reads its own letter as its own, whatever road brought it; the
+    // correspondent holds sixteen bytes it can neither open nor make; an older build reads seven fields and none of this.
+    static let authorFields = 7   // the fields before the author: mid, text, name, glyph, quote, quoted mid, card
+    static func authorTag(key: Data, secret: Data, mid: String, text: String) -> String {
+        var m = Data("mt-letter-author".utf8); m.append(0); m.append(secret)   // LOCAL-HASH-OK: canon owner
+        m.append(contentsOf: mid.utf8); m.append(0); m.append(contentsOf: text.utf8)
+        let mac = HMAC<SHA256>.authenticationCode(for: m, using: SymmetricKey(data: key))
+        return Data(mac).prefix(16).base64EncodedString()
+    }
+    /// Whether a letter's author field is this person's: the tag made again under this person's key, compared in constant time.
+    static func authorHolds(_ tag: String, key: Data?, secret: Data, mid: String, text: String) -> Bool {
+        guard let key, key.count == 32, !tag.isEmpty, let got = Data(base64Encoded: tag), got.count == 16,
+              let want = Data(base64Encoded: authorTag(key: key, secret: secret, mid: mid, text: text)) else { return false }
+        var diff: UInt8 = 0
+        for (a, b) in zip(got, want) { diff |= a ^ b }
+        return diff == 0
+    }
+    /// The body with the author's field: every field before it closed and the empty ones written, so the tag stands eighth
+    /// whatever the letter carries; a body that would outgrow the envelope rides without it.
+    static func withAuthor(_ body: Data, key: Data?, secret: Data, mid: String, text: String) -> Data {
+        guard let key, key.count == 32 else { return body }
+        var b = body
+        if let last = b.last, last != 0 { b.append(0) }
+        var closed = b.reduce(0) { n, x in x == 0 ? n + 1 : n }
+        while closed < authorFields { b.append(0); closed += 1 }
+        guard closed == authorFields else { return body }
+        b.append(contentsOf: authorTag(key: key, secret: secret, mid: mid, text: text).utf8); b.append(0)
+        return b.count <= envelopeSize ? b : body
+    }
+    /// The author's key the app mirrors for the extensions (wakeMyAuthor): the share sheet and the notification extension sign
+    /// and read by it; the app derives its own from the words (MTLetterAuthor).
+    static func mirroredAuthorKey() -> Data? { MontanaKeychain.get("wakeMyAuthor").flatMap { d in d.count == 32 ? d : nil } }
+    /// THE FIELDS OF A LETTER, read in one place for the app and the extensions: mid, text, name, glyph, quote, quoted mid, card
+    /// and author; an absent one reads empty.
+    static func letterFields(_ plain: Data) -> [String] {
+        var fields: [String] = []; var rest = plain[plain.startIndex...]
+        while fields.count <= authorFields {
+            guard let z = rest.firstIndex(of: 0) else {
+                fields.append(String(data: rest, encoding: .utf8) ?? ""); break
+            }
+            fields.append(String(data: rest[rest.startIndex..<z], encoding: .utf8) ?? "")
+            rest = rest[rest.index(after: z)...]
+        }
+        while fields.count <= authorFields { fields.append("") }
+        return fields
     }
     /// The phone's ONE elected door first (1638, the author's word: one live node per phone):
     /// written by the app, read by every process that knocks without the live list.
@@ -120,7 +174,7 @@ enum MTNodeWire {
             walked += 1
             let r = await post("/wake", make: {
                 guard let env = sealBlob(key: bodyKey(secret: secret, window: minuteWindow()), plain) else { return [:] }
-                var body: [String: Any] = ["conv": cw, "from_id": sub, "mid": mid, "env": env.base64EncodedString()]
+                var body: [String: Any] = ["conv": cw, "from_id": sub, "mid": mid, "env": env.base64EncodedString(), "app": MontanaContour.appId]
                 if silent { body["silent"] = true }   // a service word (a receipt from the shelf, MTShelfPost) rings nobody
                 return body
             }, doors: [d], attempts: 1)

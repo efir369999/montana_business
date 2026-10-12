@@ -28,6 +28,11 @@ enum MontanaContour {
     /// itself on the German server first, then Lauterbourg's door that carries to it (06.10.2026); the phone asks them all.
     static let bizServices: [String] = (Bundle.main.object(forInfoDictionaryKey: "MontanaBizService") as? String ?? "")
         .lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+    /// THE APP'S OWN NOTIFY SERVICE (the author's word 10.10.2026 21:1x MSK: «Business as a separate application and as a separate
+    /// notification server»): a node's door carries this app's registrations and its call wakes to the service of this app
+    /// (MONTANA_NOTIFY_ROAD in the project, "/b" for Business); empty -- the node's first service. Every letter names its app
+    /// ("app" at /wake), so the node rings it through that app's service first and hands the rest to the other one.
+    static let notifyRoad: String = Bundle.main.object(forInfoDictionaryKey: "MontanaNotifyRoad") as? String ?? ""
 }
 
 // THE shared-keychain accessor, and the only one ([I-10]/[C-1]). The app and the share extension

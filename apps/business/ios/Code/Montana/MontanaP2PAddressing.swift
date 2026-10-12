@@ -58,6 +58,20 @@ enum MontanaQueueKeys {
         }
         return rc == 0 ? Data(out) : nil
     }
+    /// author_key = HKDF-Expand(master_seed, "mt-letter-author", 32): the person's key for the author field of a letter
+    /// (MTNodeWire.authorTag), the same on every device of the words and on none other.
+    static func authorKey(_ mnemonic: String) -> Data? {
+        guard let master = masterSeed(mnemonic) else { return nil }
+        let role = Array("mt-letter-author".utf8)
+        let m = [UInt8](master)
+        var out = [UInt8](repeating: 0, count: 32)
+        let rc = m.withUnsafeBufferPointer { mp in
+            role.withUnsafeBufferPointer { rp in
+                mt_mldsa_seed_for_role(mp.baseAddress, rp.baseAddress, role.count, &out)
+            }
+        }
+        return rc == 0 ? Data(out) : nil
+    }
     // The queue keys keep the same memory as the root (19.09): their derivation walks the same
     // 2^20 stretching, and it stood 3 s on the main thread of a tester's phone (1647,
     // mt_muq_derive_queue_keys → pbkdf2). Same answer for the same phrase — paid once per launch.
@@ -104,5 +118,45 @@ enum MontanaQueueKeys {
                 mt_muq_queue_serialize(ridP.baseAddress, sidP.baseAddress, rpkP.baseAddress, nil, 1, 64, &out, out.count)
             }}}
         return n > 0 ? Data(out[0..<Int(n)]) : nil
+    }
+}
+
+/// THE PERSON'S AUTHOR KEY ON THIS PHONE (MTNodeWire.authorTag, 11.10.2026): derived from the words once, off the main thread --
+/// the root costs 2^20 stretching the first time in a launch -- held in memory for the person seated and mirrored for the
+/// extensions (wakeMyAuthor, parked and lifted with the seat). Asked before it stands, it answers with the mirror and starts the
+/// derivation; a letter born in that instant rides unsigned, as every letter of an older build does.
+enum MTLetterAuthor {
+    private static let lock = NSLock()
+    private static var held: (words: Data, key: Data)?
+    private static var deriving = false
+    static var key: Data? {
+        guard let m = MontanaSeed.mnemonic else { return nil }
+        let words = MontanaQueueKeys.sha256(Data(m.utf8))
+        let have: Data? = lock.withLock { held.flatMap { h in h.words == words ? h.key : nil } }
+        if let have { return have }
+        warm(m, words)
+        return MTNodeWire.mirroredAuthorKey()
+    }
+    private static func warm(_ m: String, _ words: Data) {
+        let go: Bool = lock.withLock {
+            if deriving { return false }
+            deriving = true
+            return true
+        }
+        guard go else { return }
+        DispatchQueue.global(qos: .utility).async {
+            let k = MontanaQueueKeys.authorKey(m)
+            lock.withLock {
+                deriving = false
+                if let k { held = (words, k) }
+            }
+            if let k { MontanaKeychain.set("wakeMyAuthor", k) }
+            MontanaP2PTrace.mark("letter_author", "key=" + (k == nil ? "0" : "1"))
+        }
+    }
+    /// Whether a letter in this conversation was written by this person -- on this device or another of the same words.
+    static func mine(_ tag: String, conv: String, mid: String, text: String) -> Bool {
+        guard !tag.isEmpty, let secret = MTPipeBook.secret(for: conv) else { return false }
+        return MTNodeWire.authorHolds(tag, key: key, secret: secret, mid: mid, text: text)
     }
 }

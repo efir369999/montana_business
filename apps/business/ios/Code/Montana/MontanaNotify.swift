@@ -284,6 +284,8 @@ enum MontanaNotify {
     static func forgetSuggestions(_ ref: String) {
         guard !ref.isEmpty else { return }
         INInteraction.delete(with: ref) { _ in }
+        let notices = MontanaMissedCall.tokens(of: ref)   // a call's notices were donated under their tokens (MontanaMissedCall.noticeToken)
+        if !notices.isEmpty { INInteraction.delete(with: notices) { _ in } }
         suggestLock.withLock { suggestedDay[ref] = nil }
     }
     /// The person left the device: every donation of theirs goes.
@@ -400,6 +402,33 @@ enum MontanaNotify {
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: key.isEmpty ? UUID().uuidString : "group-" + key, content: content, trigger: nil)) { err in
             if let err { MontanaP2PTrace.mark("notify_failed", mid: nil, "err=\(err.localizedDescription)") }
+        }
+    }
+
+    /// A DELETED LETTER OR CONVERSATION LEAVES NO BANNER BEHIND (the critic R-4, 11.10.2026; the author's word 11.10.2026 20:1x
+    /// MSK: «check the whole architecture of the chats' time chains, so there are no holes by the constitution»): only the opening
+    /// of a chat took its banners down (markRead), so a letter its writer erased for everyone, or a conversation erased at either
+    /// end, still stood on the lock screen in its own words. A banner names its chat (userInfo «chat», the thread) and its letter
+    /// (userInfo «mid», the extension's and the call's; the app's own by its identifier: the name, «group-» and «pin-» forms).
+    static func removeBanners(chat: String? = nil, letters: [String] = []) {
+        let names = Set(letters.map { m in m.hasPrefix("mid:") ? String(m.dropFirst(4)) : m }.filter { m in !m.isEmpty })
+        let conv = chat ?? ""
+        guard !conv.isEmpty || !names.isEmpty else { return }
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { list in
+            let ids = list.filter { n in
+                let c = n.request.content
+                if !conv.isEmpty, MontanaMissedCall.chat(of: c.userInfo) == conv || c.threadIdentifier == conv { return true }
+                guard !names.isEmpty else { return false }
+                if let m = c.userInfo["mid"] as? String, names.contains(m.hasPrefix("mid:") ? String(m.dropFirst(4)) : m) { return true }
+                let id = n.request.identifier
+                for p in ["mid:", "group-"] where id.hasPrefix(p) { if names.contains(String(id.dropFirst(p.count))) { return true } }
+                if names.contains(id) { return true }
+                return id.hasPrefix("pin-") && names.contains { m in id.hasSuffix("-" + m) || id.hasSuffix(":" + m) }
+            }.map { n in n.request.identifier }
+            guard !ids.isEmpty else { return }
+            center.removeDeliveredNotifications(withIdentifiers: ids)
+            MontanaP2PTrace.mark("banner_swept", "deleted n=" + String(ids.count))
         }
     }
 

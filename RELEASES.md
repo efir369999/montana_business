@@ -8,11 +8,11 @@ TestFlight. Each row names the folder that holds the source and the commit of th
 Each folder of this repository is the tree of one commit of the project's history, staged as it is built. The publisher writes this table in the same commit as the folder it names; the message of that commit names the source commit in full.
 
 <!-- sources:start -->
-| Folder | Build | Source commit | Staged |
-|---|---|---|---|
-| `apps/business/android` | 39 | `f45fc3b2639e` | 2026-10-10 11:53 UTC |
-| `apps/business/ios` | 77 | `e9a8f8905954` | 2026-10-10 11:53 UTC |
-| `core` | core line | `449a706c2752` | 2026-10-10 11:53 UTC |
+| Folder | Build | Source commit | Folder tree | Staged |
+|---|---|---|---|---|
+| `apps/business/android` | 39 | `f45fc3b2639e` | `3480d33a098f47723d9cebaa4d2e58bf9891ef21` | 2026-10-10 11:53 UTC |
+| `apps/business/ios` | 82 | `f473579b9f48` | `926965a2e06133bdd0952c76070054a67c6a6b0b` | 2026-10-12 12:02 UTC |
+| `core` | core line | `449a706c2752` | `5e789a746e37281fbb492ba84de6357204736d7f` | 2026-10-10 11:53 UTC |
 <!-- sources:end -->
 
 ## 2026-10-08: MT Business 1.0 (68)

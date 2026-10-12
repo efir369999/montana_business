@@ -662,6 +662,7 @@ enum MontanaWakePush {
         // the envelope, so the mirror carries it the same way it carries the pipe secrets
         // (device-only keychain, never the node).
         MontanaKeychain.set("wakeMyAddr", Data(twinRef.utf8))
+        _ = MTLetterAuthor.key   // the person's author key stands before the next letter, and its mirror (wakeMyAuthor) with it
         MontanaKeychain.set("wakeMyName", Data(E2E.myDisplayName().utf8))
         MontanaKeychain.set("wakeMyGlyph", Data(E2E.myFaceGlyph().utf8))
     }
@@ -785,6 +786,14 @@ enum MontanaWakePush {
                 subs.append(["conv": cw, "sid": mySubId(cw)])
             }
         }
+        // THE OTHER DEVICES OF THIS SEED RING THIS ONE (11.10.2026, No.60): the pipe of the seed's devices, under this device's own
+        // name -- every device of the seed is one person to the pipes of its correspondents, and here each is itself.
+        for (_, secret) in MontanaArchive.twinListening() {
+            for w in (w0 - 1)...(w0 + 1) {
+                let cw = convW(secret, window: w)
+                subs.append(["conv": cw, "sid": MontanaArchive.twinSid(cw)])
+            }
+        }
         // THE SHELF RINGS THE PHONE TOO (07.10, MTShelfPost): the persons waiting on this phone's shelf are registered under
         // their own references, after the person seated -- the node trims the tail first.
         let seated = Set(MTPipeBook.all().compactMap { MTPipeBook.secret(for: $0) })
@@ -807,6 +816,7 @@ enum MontanaWakePush {
         // when the door answered 200 to its removal, so a failed removal is asked again next time.
         let now = Date().timeIntervalSince1970
         let wanted = Set(subs.map(pairKey))
+        let letterClean = takeLetterClean() && MontanaDeviceKey.key != nil   // cleanCallRows: the letters' rows start afresh too
         // A BLOCKED PERSON'S PAIRS ARE ASKED GONE UNTIL THE DOOR CONFIRMS IT (measured 15.09 15:05):
         // the map may hold no record of them — a removal under an older build named the letter
         // token only, the map forgot the pair, and the door's call row lived on and woke the
@@ -832,10 +842,10 @@ enum MontanaWakePush {
         // the round went out again: eight timeouts to two doors that held nothing new. The second name is walked
         // only while the first rests (notBusy runs first), and then its own map decides what is due there.
         for b in oneDoorPerNode(notBusy(orderedBases(for: "notify"))) {
-            guard let url = URL(string: b + "/register"), let gone = URL(string: b + "/unregister") else { continue }   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
+            guard let url = URL(string: b + MontanaContour.notifyRoad + "/register"), let gone = URL(string: b + MontanaContour.notifyRoad + "/unregister") else { continue }   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
             let host = URL(string: b)?.host ?? b
             let standing = registeredPairs(host, token: hex)   // positive: held by the door since; negative: confirmed gone at; absent: unknown
-            let due = subs.filter { p in (standing[pairKey(p)] ?? 0) < now - regRefresh }
+            let due = letterClean || doubtedNow(host, token: hex) ? subs : subs.filter { p in (standing[pairKey(p)] ?? 0) < now - regRefresh }
             var stale: [[String: String]] = standing.filter { 0 < $0.value && !wanted.contains($0.key) }.keys.compactMap { k in
                 let parts = k.split(separator: "|", maxSplits: 1).map(String.init)
                 return parts.count == 2 ? ["conv": parts[0], "sid": parts[1]] : nil
@@ -860,13 +870,22 @@ enum MontanaWakePush {
             }
             guard !due.isEmpty else {
                 MontanaP2PTrace.markFolded("wakepush_reg", "standing=\(subs.count) door=\(host) token=\(String(hex.prefix(8))) — nothing new", window: 600)
+                if let p = subs.first { askHeld(url, host: host, token: hex, topic: topic, pair: p, extra: ["faces": 1, "heard": 1], tag: "wakepush_held") }
                 continue
             }
             // «faces»: this build holds the fallback keys in its catalog, so the node may send a
             // loc-key instead of the English literal. A build without them never says it, and the
             // node keeps the literal for it — the raw key must never reach a screen.
+            // «heard»: this build's extension tells the doors which bell it heard (NotificationService.tellHeard), so the
+            // node may keep the token's last bell loud until then (10.10).
+            // A DOOR MAP THAT READS EMPTY UNDER AN OPEN VAULT STARTS THE DOOR'S ROWS AFRESH (11.10.2026, No.61): «forget the seed»
+            // resets the device key, the map sealed under the old one reads empty, and the old rows of this token stood at the door
+            // waking the phone for conversations it could no longer open (iPhone 17: wakepush_vrx peer=nil). The first car says
+            // «fresh»: the node drops this token's rows of the table and takes the car under one lock; the chain lands it first.
+            let fresh: [String: Any] = letterClean || (standing.isEmpty && MontanaDeviceKey.key != nil && knowsNoDoor(token: hex)) ? ["fresh": 1] : [:]
             sendChunks(due, url: url, token: hex, topic: topic, digestKey: regDigestKey, tag: "wakepush_reg",
-                       recorded: { chunk in noteRegistered(host, chunk, at: now, token: hex) }, extra: ["faces": 1])
+                       recorded: { chunk in noteRegistered(host, chunk, at: now, token: hex) }, extra: ["faces": 1, "heard": 1],
+                       firstExtra: fresh)
         }
     }
 
@@ -896,11 +915,21 @@ enum MontanaWakePush {
     /// week while the door rang the token of yesterday.
     /// The door's standing maps are named under this prefix, once: SeedScope names it as this device's own.
     static let regSetPrefix = "regSet_"
+    /// THE MAPS ARE BORN AGAIN ONCE (10.10.2026). Until the node kept one row per token, another app of the same seed took a
+    /// pair's row and its withdrawal deleted it while this map still called the pair held: T1's letters of 23:10Z and 00:00Z
+    /// found no row at either node (woken=0/0). A new generation finds every map empty and posts every pair once.
+    private static let regGeneration = "-g2"
     /// The call token keeps maps of its own under the same law (23.09): the caller names the token the pairs
     /// were posted under -- the letters' token or the call token -- and each gets its own map per door.
     private static func regSetKey(_ host: String, token hex: String) -> String {
         let tok = SHA256.hash(data: Data(hex.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
-        return regSetPrefix + subIdFormat + "_" + host + "_" + tok
+        return regSetPrefix + subIdFormat + regGeneration + "_" + host + "_" + tok
+    }
+    /// THE PHONE KNOWS NO DOOR (11.10.2026, No.61): every door's map for this token reads empty -- the state «forget the seed»
+    /// leaves behind (the maps were sealed under the reset key) and a first install meets. A second name of a machine whose first
+    /// name holds a map is not this state: a fresh round there would drop rows the phone still counts on.
+    private static func knowsNoDoor(token hex: String) -> Bool {
+        orderedBases(for: "notify").allSatisfy { b in registeredPairs(URL(string: b)?.host ?? b, token: hex).isEmpty }
     }
     private static func registeredPairs(_ host: String, token hex: String) -> [String: Double] {
         regSetLock.lock(); defer { regSetLock.unlock() }   // LOCK-OK: read-modify-write of the registration-set record
@@ -912,6 +941,44 @@ enum MontanaWakePush {
         guard let d = MontanaLocalVault.getDecrypted(regSetKey(host, token: hex)),
               let m = try? JSONDecoder().decode([String: Double].self, from: d) else { return [:] }
         return m
+    }
+    /// WHAT A DOOR KEEPS IS ASKED, NOT REMEMBERED (the author's word 10.10.2026 12:5x MSK: «notifications reinforced concrete, not
+    /// one error in principle»). The standing map is this phone's belief, and the belief stood a week while the door had lost the
+    /// rows under it. A round with nothing to post asks the door, at most twice an hour, how many rows it keeps for this token
+    /// (montana-notify answers "rows" since 10.10, re-asserting one pair); a door keeping fewer than the map believes is posted
+    /// the whole set at the next round. The node keeps at most 8192 rows for a token, so a belief above that is read at the cap.
+    private static var heldAskedAt: [String: Double] = [:]   // BOUND-OK: one moment per door and token
+    private static var doubted: Set<String> = []             // BOUND-OK: doors whose rows fell short, until the next round
+    private static let heldLock = NSLock()
+    private static func doubtedNow(_ host: String, token hex: String) -> Bool {
+        heldLock.withLock { doubted.remove(host + "@" + hex) != nil }
+    }
+    private static func askHeld(_ url: URL, host: String, token hex: String, topic: String, pair: [String: String],
+                                extra: [String: Any], tag: String) {
+        let now = Date().timeIntervalSince1970
+        let key = host + "@" + hex
+        let ask: Bool = heldLock.withLock {
+            if let at = heldAskedAt[key], now - at < 1800 { return false }
+            heldAskedAt[key] = now
+            return true
+        }
+        guard ask else { return }
+        var req = URLRequest(url: url); req.httpMethod = "POST"   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
+        req.setValue("application/json", forHTTPHeaderField: "content-type")
+        var body: [String: Any] = ["token": hex, "environment": apsEnvironment(), "topic": topic, "subs": [pair]]
+        for (k, v) in extra { body[k] = v }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        knockSession.dataTask(with: req) { data, resp, _ in   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
+            guard (resp as? HTTPURLResponse)?.statusCode == 200,
+                  let o = data.flatMap({ try? JSONSerialization.jsonObject(with: $0) }) as? [String: Any],
+                  let rows = o["rows"] as? Int else { return }   // a door before 10.10 does not say what it keeps
+            let believed = min(8192, registeredPairs(host, token: hex).values.filter { 0 < $0 && now - 31 * 86400 < $0 }.count)
+            MontanaP2PTrace.markFolded(tag, "door=\(host) keeps=\(rows) believed=\(believed)", window: 3600)
+            guard rows < believed else { return }
+            MontanaP2PTrace.mark(tag, "door=\(host) keeps=\(rows) believed=\(believed) -- rows lost at the door, the whole set goes again")
+            heldLock.withLock { _ = doubted.insert(key) }
+            DispatchQueue.main.async { registerConvs() }
+        }.resume()
     }
     private static func noteRegistered(_ host: String, _ chunk: [[String: String]], at now: Double, token hex: String) {
         regSetLock.lock(); defer { regSetLock.unlock() }   // LOCK-OK: read-modify-write of the registration-set record
@@ -943,7 +1010,7 @@ enum MontanaWakePush {
     private static func sendChunks(_ subs: [[String: String]], url: URL, token: String, topic: String,
                                    digestKey: String, tag: String, index: Int = 0,
                                    recorded: (([[String: String]]) -> Void)? = nil, extra: [String: Any] = [:],
-                                   refused: ((Int) -> Void)? = nil) {
+                                   firstExtra: [String: Any] = [:], refused: ((Int) -> Void)? = nil) {
         let host = url.host ?? "-"
         guard index < subs.count else { regRetryDelay = 12; regChainEnds(tag, host); return }   // the whole chain passed — the pace is forgiven
         if index == 0, !regChainStarts(tag, host) {
@@ -955,6 +1022,8 @@ enum MontanaWakePush {
         req.setValue("application/json", forHTTPHeaderField: "content-type")
         var regBody: [String: Any] = ["token": token, "environment": apsEnvironment(), "topic": topic, "subs": chunk]
         for (k, v) in extra { regBody[k] = v }
+        if index == 0 { for (k, v) in firstExtra { regBody[k] = v } }   // the first car alone: the chain lands it before the rest (No.61, «fresh»)
+        if index == 0, !firstExtra.isEmpty { MontanaP2PTrace.mark(tag, "first car \(firstExtra.keys.sorted().joined(separator: ",")) door=\(host) pairs=\(subs.count) token=\(String(token.prefix(8)))") }
         req.httpBody = try? JSONSerialization.data(withJSONObject: regBody)
         knockSession.dataTask(with: req) { _, resp, _ in   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
@@ -1205,8 +1274,14 @@ enum MontanaWakePush {
             // The link card rides the envelope WITHOUT its picture (the 2048 cap); the mesh
             // leg of the same letter carries the full card, and the receiver's dedup keeps
             // whichever landed first. Decoration: does not fit — rides without it.
+            // THE CARD STANDS SEVENTH, WHERE EVERY READER LOOKS (11.10.2026): the tail is the live frame's, which opens with the
+            // close of the field before it, while the head closes its own last field -- the card stood eighth in every envelope
+            // and no build read it. The head's close gives way to the tail's.
+            if body.last == 0 { body.removeLast() }
             body.append(tail)
         }
+        // The person signs the letter as its author (MTNodeWire.withAuthor): every device of the words reads it as its own.
+        body = MTNodeWire.withAuthor(body, key: MTLetterAuthor.key, secret: secret, mid: mid, text: text)
         guard let padded = MTNodeWire.padEnvelope(body) else { return nil }
         return MTPipe.sealBody(padded, sharedSecret: secret)?.base64EncodedString()
     }
@@ -1272,7 +1347,7 @@ enum MontanaWakePush {
             }
         }
         let cw = convW(secret, window: dayWindow())
-        var body: [String: Any] = ["conv": cw, "from_id": mySubId(cw), "mid": mid]
+        var body: [String: Any] = ["conv": cw, "from_id": mySubId(cw), "mid": mid, "app": MontanaContour.appId]
         if silent { body["silent"] = true }   // a service letter: a background push, no banner
         if recall { body["recall"] = true }   // recall: the node erases «already rang» — the retry regains its loud knock
         // THE NODE KEEPS EVERY LETTER IT RINGS FOR (23.09, the author's word: «the old road is not taken away
@@ -1404,7 +1479,7 @@ enum MontanaWakePush {
         let secret = rdvLetterSecret(invite)
         let fire: (String) -> Void = { env in
             var req2 = req
-            let body: [String: Any] = ["conv": cw, "from_id": mySubId(cw), "mid": mid, "env": env]
+            let body: [String: Any] = ["conv": cw, "from_id": mySubId(cw), "mid": mid, "env": env, "app": MontanaContour.appId]
             req2.httpBody = try? JSONSerialization.data(withJSONObject: body)
             knockSession.dataTask(with: req2) { _, resp, _ in   // SERVER-DEBT-ACK: the accelerator node (rung 4)
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
@@ -2056,18 +2131,7 @@ enum MontanaWakePush {
     // 7 days) and yields it to the receiver via /fetch. The node does not hand a letter to
     // its own sender — the filter by presented sender tags, the same principle as /wake.
 
-    private static func parseLetterFields(_ plain: Data) -> [String] {
-        var fields: [String] = []; var rest = plain[plain.startIndex...]
-        while fields.count < 7 {
-            guard let z = rest.firstIndex(of: 0) else {
-                fields.append(String(data: rest, encoding: .utf8) ?? ""); break
-            }
-            fields.append(String(data: rest[rest.startIndex..<z], encoding: .utf8) ?? "")
-            rest = rest[rest.index(after: z)...]
-        }
-        while fields.count < 7 { fields.append("") }
-        return fields
-    }
+    private static func parseLetterFields(_ plain: Data) -> [String] { MTNodeWire.letterFields(plain) }
 
     private static var boxLast: TimeInterval = 0
     private static var boxKickBooked = false   // one pickup booked for the end of the gate
@@ -2177,6 +2241,7 @@ enum MontanaWakePush {
             if let secret = MTPipeBook.secret(for: conv) { pipes[conv] = secret }
         }
         for (name, secret) in MTKeeping.listening() { pipes[name] = secret }   // the pipes of the slots this phone keeps (MTKeeping)
+        for (name, secret) in MontanaArchive.twinListening() { pipes[name] = secret }   // the pipe of this seed's devices (11.10.2026)
         let ear = BoxEar(invites: MontanaCard.outstandingInvites(), pipes: pipes, owner: ref)
         guard !ear.subs.isEmpty else { MontanaP2PTrace.mark("box_fetch", "subs=0 — the book/invites are empty (vault busy?)"); return }
         MontanaP2PTrace.mark("box_fetch", "subs=\(ear.subs.count) invites=\(ear.rdvLabels.count / 10) pipes=\(ear.chatOf.count / 10)")
@@ -2188,7 +2253,7 @@ enum MontanaWakePush {
             // drop it like a placed one; a later resend meets the tombstone.
             guard ChatStore.refusesNow(chat) else { return false }
             let sid = "mid:" + mid
-            await MainActor.run { ChatStore.live?.deletedMids.insert(sid) }
+            await MainActor.run { ChatStore.live?.bury([sid]) }
             MontanaP2PTrace.markFolded("rx_blocked", "box buried peer=\(String(chat.prefix(10)))", window: 60, key: "box:" + chat)
             return true
         }, keep: { row in restash(row); return true })
@@ -2211,7 +2276,12 @@ enum MontanaWakePush {
         var subs: [String] = [], sids: [String] = []
         var secretOf: [String: Data] = [:], invOf: [String: String] = [:], chatOf: [String: String] = [:]
         var rdvLabels = Set<String>()
+        /// The author key of the person this ear listens for: their own letters are told by it at the opening. The person seated
+        /// listens with theirs; a person on the shelf listens without one -- a letter of the person seated to them is theirs to
+        /// receive, never their own.
+        let author: Data?
         init(invites: [Data], pipes: [String: Data], owner: String) {   // owner: the person's own reference (P-118.1)
+            author = owner == (MontanaSeed.twin ?? "") ? MTLetterAuthor.key : nil
             let w0 = MontanaWakePush.dayWindow()
             for inv in invites {
                 let sec = MontanaWakePush.rdvLetterSecret(inv)
@@ -2222,10 +2292,13 @@ enum MontanaWakePush {
                 }
             }
             for (conv, secret) in pipes {
+                // THE SEED'S OWN PIPE NAMES EACH DEVICE APART (11.10.2026, No.60): the store yields no letter to the sid that laid
+                // it, so a device asks under its own name there (MontanaArchive.twinSid) -- its own letters stay for the others.
+                let own = conv == MontanaArchive.twinPipe
                 for w in (w0 - 8)...(w0 + 1) {
                     let cw = MontanaWakePush.convW(secret, window: w)
                     secretOf[cw] = secret; chatOf[cw] = conv
-                    subs.append(cw); sids.append(MontanaWakePush.subId(cw, ref: owner))
+                    subs.append(cw); sids.append(own ? MontanaArchive.twinSid(cw) : MontanaWakePush.subId(cw, ref: owner))
                 }
             }
         }
@@ -2361,6 +2434,9 @@ enum MontanaWakePush {
                         }
                         guard keep(["c": chat, "m": f[0], "t": f[1], "n": f[2], "g": f[3],
                                      "qt": f[4], "qm": f[5], "lp": f[6],
+                                     // THE PERSON'S OWN LETTER IS TOLD AT ITS OPENING (MTNodeWire.authorHolds), by the words as they rode:
+                                     // a long letter's words change at its landing, its author field does not.
+                                     "own": MTNodeWire.authorHolds(f[7], key: ear.author, secret: secret, mid: f[0], text: f[1]) ? "1" : "",
                                      // The minute the seal was MADE — the node's moment less the walk
                                      // the opener took (16.09). For a build whose names carry no birth,
                                      // this is the honest moment: a letter that lay sealed for an hour
@@ -2559,6 +2635,13 @@ enum MontanaWakePush {
     // address under E2E — the receiver raises the call screen at once, the offer arrives by mesh.
     private static let voipTokenKey  = "wakeVoipToken"
     private static let voipDigestKey = "wakeVoipDigest"
+    /// The life of this phone a door last heard whole, by the door's host: this install's defaults (a new install has none), the
+    /// device key (a forgotten seed draws another) and the call token, folded so no key leaves the phone.
+    static let lifePrefix = "wakeVoipLife."
+    private static func lifeStamp(_ token: String) -> String {
+        let key = MontanaDeviceKey.key.map { k in k.withUnsafeBytes { b in Data(b) } } ?? Data()
+        return SHA256.hash(data: key + Data(token.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+    }
 
     static func onVoipToken(_ token: Data) {
         let hex = token.map { String(format: "%02x", $0) }.joined()
@@ -2568,16 +2651,84 @@ enum MontanaWakePush {
     }
 
     /// Registering the voip token under all conversations' windows — mirrors registerConvs, its own debounce.
+    /// A RING NO PIPE OF MINE OPENS NAMES A ROW THE DOOR SHOULD NOT HOLD (12.10.2026, the author's word 11:5x MSK: «from Montana it
+    /// does not call»). Measured 07:23:31-07:24:26Z: the iPhone 17's install of 11.10 was woken eleven times for a pair of the
+    /// install it replaced (wakepush_vrx peer=nil, ring_posted busy-dummy from=Montana), the old call rows standing at the door
+    /// under the same call token; the node counted the person rung, asked no other app of theirs, and the caller rang 55 s into
+    /// silence (B9F26F54: cancelled-unrung knocks=11/11 side=apple). The same shape on T1's calls of 10.10 18:29Z and 11.10
+    /// 09:49Z. Only this phone can know a row is dead: it lays its whole call set again with the first car «fresh», so each door
+    /// holds exactly the pairs this phone answers for, and the caller's next knock finds the app of the person that does -- or
+    /// hears that nobody is there. Under an open vault and a readable book only (an unreadable book is «unknown», never «none»),
+    /// and once in ten minutes: a burst of knocks for one dead pair is one cleaning.
+    private static var callCleanAt: Double = 0
+    private static var callCleanDue = false
+    private static var letterCleanDue = false   // the letters' round lays its whole set too: a dead pair's letter rows go with its call rows
+    private static let callCleanLock = NSLock()
+    static func cleanCallRows(why: String) {
+        let now = Date().timeIntervalSince1970
+        let cleaning: Bool = callCleanLock.withLock {
+            guard 600 <= now - callCleanAt else { return false }
+            callCleanAt = now; callCleanDue = true; letterCleanDue = true
+            return true
+        }
+        guard cleaning else { return }
+        MontanaP2PTrace.mark("wakepush_vreg", "clean why=\(why) -- the call set goes again, its first car fresh")
+        DispatchQueue.main.async { registerConvs() }
+    }
+    private static func takeCallClean() -> Bool {
+        callCleanLock.withLock { () -> Bool in let due = callCleanDue; callCleanDue = false; return due }
+    }
+    private static func takeLetterClean() -> Bool {
+        callCleanLock.withLock { () -> Bool in let due = letterCleanDue; letterCleanDue = false; return due }
+    }
+    /// THE PHONE SAYS AT ONCE WHICH RING IT COULD NOT OPEN (12.10.2026, the critic's finding 3 of helper 65, its residue): the
+    /// cleaning above lands seconds later, and the knocks between were lost -- the caller's first eleven of 07:23Z. The node keeps
+    /// the moment it rang each call token (montana-notify, rang), so the phone names nothing but its own two tokens: at the removal
+    /// door it already uses («unopened»), the node drops the row it just rang and the conversation's letter row beside it, and rings
+    /// the person's next device or app inside the same knock. An older node answers «bad subs» and nothing changes.
+    static func reportUnopenedRing() {
+        let read: (String) -> String = { k in MontanaKeychain.get(k).flatMap { d in String(data: d, encoding: .utf8) } ?? "" }
+        let letters = read(ownTokenKey), calls = read(voipTokenKey)
+        guard !calls.isEmpty else { MontanaP2PTrace.mark("wakepush_unreg", "unopened -- no call token"); return }
+        let body: [String: Any] = ["token": letters.isEmpty ? calls : letters, "vtoken": calls, "unopened": 1, "subs": [[String: String]](),
+                                   "topic": Bundle.main.bundleIdentifier ?? "", "environment": apsEnvironment()]
+        let doors = oneDoorPerNode(notBusy(orderedBases(for: "notify")))   // one door per machine, as the removal of every row walks
+        for b in doors {
+            guard let gone = URL(string: b + MontanaContour.notifyRoad + "/unregister") else { continue }   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road -- this app's own service rang its token
+            var req = URLRequest(url: gone); req.httpMethod = "POST"   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
+            req.setValue("application/json", forHTTPHeaderField: "content-type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            knockSession.dataTask(with: req) { data, resp, _ in   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
+                let o = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
+                MontanaP2PTrace.mark("wakepush_unreg", "unopened code=\((resp as? HTTPURLResponse)?.statusCode ?? -1) door=\(gone.host ?? "-") gone=\(o?["gone"] as? Int ?? -1) rerung=\(o?["rerung"] as? Int ?? -1)")
+            }.resume()
+        }
+    }
     static func registerVoip(refusing refused: Set<String>? = nil) {
         guard let hex = MontanaKeychain.get(voipTokenKey).flatMap({ String(data: $0, encoding: .utf8) }), !hex.isEmpty else {
             MontanaP2PTrace.mark("wakepush_vreg", "skip no-token"); return   // no PushKit token yet; onVoipToken brings it
         }
         let ref = twinRef; guard !ref.isEmpty else { MontanaP2PTrace.mark("wakepush_vreg", "skip no-addr"); return }
         guard agreesWithCanon() else { MontanaP2PTrace.mark("wakepush_canon", "FAIL"); return }
-        let refs = MTPipeBook.registrable(refusing: refused ?? ChatStore.refusedNow()); guard !refs.isEmpty else { return }
+        let refs = MTPipeBook.registrable(refusing: refused ?? ChatStore.refusedNow())
+        // THE CARD RINGS ITS OWNER FOR A CALL TOO (11.10.2026, No.63, the author's word 21:5x MSK: «check T1's call at 21:55 to the iPad,
+        // Nana, Business: the call did not go through»; «calls perfect in every scenario»). A call to a pair in first contact has no pipe
+        // tag its callee listens on -- the card's owner holds no secret until the first letter's encapsulation reaches them -- and it rang
+        // nobody: measured on both nodes 18:56:58-18:57:25Z, NO RECIPIENTS, the pipe's call rows held one row, the caller's own. The letters
+        // already ring the owner at the card's tag (registerRound, F-2); the calls ring there now as well, and the caller's walk knocks
+        // there when the pipe's own tag rang nobody (wakeVoip, cardRing). A device with one card and no pipe registers like any other.
+        let invites = MontanaCard.outstandingInvites()
+        guard !refs.isEmpty || !invites.isEmpty else { return }
         let topic = Bundle.main.bundleIdentifier ?? ""
         let w0 = dayWindow()
         var subs: [[String: String]] = []
+        // The card's tags first, as at registerRound: the node trims the body by size, and the doorbell outranks a long-silent pipe.
+        for inv in invites {
+            for w in (w0 - 1)...(w0 + windowsAhead) {
+                let cw = rdvConvW(inv, window: w)
+                subs.append(["conv": cw, "sid": mySubId(cw)])
+            }
+        }
         for pipe in refs {
             guard let secret = MTPipeBook.secret(for: pipe) else { continue }
             // The S-2 sign of life gates the fan-out: a pipe nobody ever answered has nobody
@@ -2604,26 +2755,71 @@ enum MontanaWakePush {
         // One door per machine and one chain per door at a time (24.09): the law and the measurement stand at registerConvs.
         let now = Date().timeIntervalSince1970
         var told = false
+        // THE DOOR HEARS EACH LIFE OF THIS PHONE ONCE, WHOLE (the author's word 12.10.2026 13:4x MSK, No.65: «a call came to her and
+        // dropped by itself before her eyes -- fix it and allow no such scenario by construction»). Nana's iPhone 17, 07:23:31-07:24:09Z:
+        // eleven call pushes for a pair of the install this one replaced (wakepush_vrx peer=nil, ring_posted busy-dummy end=failed) --
+        // the system must be shown a call for every call push, so each one flashed on her screen and fell. The cleaning above follows
+        // such a ring, so the first one still flashed. A life of this phone -- this install's defaults, the device key, the token --
+        // lays its whole call set fresh at each door at its first registration with a readable book: no row of an earlier life
+        // stands at a door when the first call comes.
+        let known = MontanaDeviceKey.key != nil && !MTPipeBook.all().isEmpty
+        let clean = known && takeCallClean()   // cleanCallRows
+        let life = lifeStamp(hex)
         for b in oneDoorPerNode(notBusy(orderedBases(for: "notify"))) {
-            guard let url = URL(string: b + "/register-voip") else { continue }   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
+            guard let url = URL(string: b + MontanaContour.notifyRoad + "/register-voip") else { continue }   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
             // THE TOKEN NAMES ITS LIFE (13.09): the node keeps a call wake alive at Apple exactly as
             // long as THIS build accepts a delivered one (callLifeS) — a token without the word
             // gets the old builds' 25 s, and a longer life on the node cannot hand an old build
             // a push it would answer with a dummy missed call ([P2P-COMPAT]).
             let host = URL(string: b)?.host ?? b
             let standing = registeredPairs(host, token: hex)
-            let due = subs.filter { p in (standing[pairKey(p)] ?? 0) < now - regRefresh }
+            let unheard = known && UserDefaults.standard.string(forKey: lifePrefix + host) != life
+            let due = clean || unheard || doubtedNow(host, token: hex) ? subs : subs.filter { p in (standing[pairKey(p)] ?? 0) < now - regRefresh }
             guard !due.isEmpty else {
                 MontanaP2PTrace.markFolded("wakepush_vreg", "standing=\(subs.count) door=\(host) -- nothing new", window: 600)
+                if let p = subs.first {
+                    askHeld(url, host: host, token: hex, topic: topic, pair: p, extra: ["life": Int(MontanaCall.callLifeS), "dw": 1], tag: "wakepush_vheld")
+                }
                 continue
             }
             if !told {
                 told = true
-                MontanaP2PTrace.mark("wakepush_vreg", "pipes=\(refs.count) answered=\(answered) subs=\(subs.count)")   // what the phone offers the node to ring it by
+                MontanaP2PTrace.mark("wakepush_vreg", "pipes=\(refs.count) cards=\(invites.count) answered=\(answered) subs=\(subs.count)")   // what the phone offers the node to ring it by
             }
+            // «dw»: this build names its device on the wake road too (No.61) -- the node rings every device of a person only to
+            // tokens that said it. «fresh»: the first car of a door whose map reads empty under an open vault (registerRound).
+            let fresh: [String: Any] = clean || unheard || (standing.isEmpty && MontanaDeviceKey.key != nil && knowsNoDoor(token: hex)) ? ["fresh": 1] : [:]
             sendChunks(due, url: url, token: hex, topic: topic, digestKey: voipDigestKey, tag: "wakepush_vreg",
-                       recorded: { chunk in noteRegistered(host, chunk, at: now, token: hex) },
-                       extra: ["life": Int(MontanaCall.callLifeS)])
+                       recorded: { chunk in
+                           noteRegistered(host, chunk, at: now, token: hex)
+                           if unheard { UserDefaults.standard.set(life, forKey: lifePrefix + host) }   // this door heard this life whole
+                       },
+                       extra: ["life": Int(MontanaCall.callLifeS), "dw": 1], firstExtra: fresh)
+        }
+    }
+
+    /// THE NODE FORGETS THIS PHONE'S ROWS WITH THE PERSON (11.10.2026, No.61): «forget the seed» resets the device key, and the
+    /// door maps sealed under it -- the one record of what each door holds -- are unreadable from then on; the phone never
+    /// withdrew the old rows, and the node went on waking it for conversations it could no longer open (iPhone 17:
+    /// wakepush_vrx peer=nil, the caller heard nothing). Every row of both tokens is withdrawn at each notify machine by the
+    /// removal door itself («all»), before the keys go. No registration follows here, so no answer is awaited.
+    static func withdrawTokenRowsEverywhere() {
+        let letters = MontanaKeychain.get(ownTokenKey).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        let calls = MontanaKeychain.get(voipTokenKey).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        guard !letters.isEmpty || !calls.isEmpty else { MontanaP2PTrace.mark("wakepush_unreg", "all -- no token"); return }
+        let token = letters.isEmpty ? calls : letters
+        let body: [String: Any] = ["token": token, "vtoken": calls.isEmpty ? token : calls, "all": 1, "subs": [[String: String]](),
+                                   "topic": Bundle.main.bundleIdentifier ?? "", "environment": apsEnvironment()]
+        let doors = oneDoorPerNode(notBusy(orderedBases(for: "notify")))
+        MontanaP2PTrace.mark("wakepush_unreg", "all doors=\(doors.count) letters=\(letters.isEmpty ? 0 : 1) calls=\(calls.isEmpty ? 0 : 1)")
+        for b in doors {
+            guard let gone = URL(string: b + "/unregister") else { continue }   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
+            var req = URLRequest(url: gone); req.httpMethod = "POST"   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
+            req.setValue("application/json", forHTTPHeaderField: "content-type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            knockSession.dataTask(with: req) { _, resp, _ in   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
+                MontanaP2PTrace.mark("wakepush_unreg", "all code=\((resp as? HTTPURLResponse)?.statusCode ?? -1) door=\(gone.host ?? "-")")
+            }.resume()
         }
     }
 
@@ -2642,6 +2838,7 @@ enum MontanaWakePush {
 
     private static func restash(_ row: [String: String]) {
         if MTKeeping.takes(row) { return }   // a call in the pipe of a slot this phone keeps: answered there, never a letter of the feed
+        if MontanaArchive.twinTakes(row) { return }   // the history of this seed's other devices: filed there, never a letter of the feed
         var arr: [[String: String]] = []
         if let d = MontanaKeychain.get("nseInbox"),
            let a = try? JSONDecoder().decode([[String: String]].self, from: d) { arr = a }
@@ -2901,6 +3098,7 @@ enum MontanaWakePush {
             if let g = it["g"], !g.isEmpty { ui["senderGlyph"] = g }
             if let qt = it["qt"], !qt.isEmpty { ui["quoteText"] = qt; ui["quoteMid"] = it["qm"] ?? "" }
             if let lp = it["lp"], !lp.isEmpty { ui["linkPreview"] = lp }
+            if it["own"] == "1" { ui["own"] = true }   // the person's own letter, told by its author field at its opening
             if t.hasPrefix(letterBlobMark) {
                 Task {   // a long letter: pull the blob and store the FULL text
                     if case .landed(let full) = await takeLongLetter(conv: c, mid: m, text: t) {
@@ -3310,7 +3508,17 @@ enum MontanaWakePush {
         // before any door can cut it.
         let wait = building ? 3 : (st == "connected" ? 10 : 12)
         req.timeoutInterval = TimeInterval(wait + 3)
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["conv": cw, "from_id": mySubId(cw), "wait": wait])
+        // EVERY DEVICE OF THE SEED TAKES THE WORD ONCE (11.10.2026, No.61, the critic's finding 3): the store hands each word once to
+        // each asking device it can tell apart, where it used to hand it to the first device of the seed that asked. This device names
+        // itself for this lane only -- a name made of its tag and the conversation's daily label, so the node links no two
+        // conversations, nor two days, of one phone. A tag still pending names nothing: the old shared hand.
+        var fetch: [String: Any] = ["conv": cw, "from_id": mySubId(cw), "wait": wait]
+        let tag = E2E.deviceTag()
+        if tag != "ios-pending" {
+            fetch["dev"] = SHA256.hash(data: Data(("mt-lane-dev\u{0}" + tag + "\u{0}" + cw).utf8)).prefix(8)
+                .map { String(format: "%02x", $0) }.joined()
+        }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: fetch)
         let session = sigLane(for: door)
         let gen = sigGen
         session.dataTask(with: req) { d, resp, err in   // SERVER-DEBT-ACK: the accelerator node (rung 4)
@@ -3413,6 +3621,7 @@ enum MontanaWakePush {
                     guard !f[0].isEmpty, !f[1].isEmpty, !ChatStore.refusesNow(conv) else { continue }
                     MontanaP2PTrace.mark("sig_apply", "lane=letter mid=\(String(f[0].prefix(8))) from=\(String(conv.prefix(10)))")
                     restash(["c": conv, "m": f[0], "t": f[1], "n": f[2], "g": f[3], "qt": f[4], "qm": f[5], "lp": f[6],
+                             "own": MTNodeWire.authorHolds(f[7], key: MTLetterAuthor.key, secret: secret, mid: f[0], text: f[1]) ? "1" : "",
                              "at": String(Int(now) - opened.back * 60)])
                     DispatchQueue.main.async { drainInbox() }
                     continue
@@ -3455,17 +3664,29 @@ enum MontanaWakePush {
         answerGone(conv: conv, epoch: epoch, msgs: msgs)
     }
     /// The same answer for the pipe's words, which arrive already open (24.09: the pipe names every word's call).
+    /// AN ANSWER TO A CALL THIS DEVICE ENDED IS ANSWERED «GONE» (12.10.2026, the author's words 12:4x MSK on Nana's iPhone 17: «the
+    /// call comes and drops»): Marusya answered at 09:34:46.518Z a ring of Nana's call that Nana had ended at 42.278, and her phone
+    /// stood «connecting» twelve seconds into nothing while Nana's phone read the answer as a sibling's and said nothing
+    /// (call_sibling answer to a machine at rest). An answer addressed to THIS device («to», No.60) for a call whose seed this
+    /// device buried is the far phone holding a call nobody holds: the word «gone» goes back to the device that answered, once.
+    /// A sibling of either person never says it: the answer names another device, or the seed never lay in its graveyard.
     static func answerGone(conv: String, epoch: String, msgs: [E2E.CallSigMsg]) {
-        guard !epoch.isEmpty, epoch != "chat", epoch == MontanaCall.lostEpoch,   // only the call THIS device held and lost
-              msgs.contains(where: { $0.ctrl == "call-restart" || $0.ctrl == "call-restart-answer" }) else { return }
+        guard !epoch.isEmpty, epoch != "chat" else { return }
+        let lost = epoch == MontanaCall.lostEpoch   // only the call THIS device held and lost
+            && msgs.contains(where: { $0.ctrl == "call-restart" || $0.ctrl == "call-restart-answer" })
+        let me = MontanaCall.deviceWord(epoch: epoch)
+        let ghost = me.isEmpty ? nil : msgs.first(where: { $0.ctrl == "call-answer" && $0.to == me })
+        let ended = ghost != nil && MontanaCall.endedHere(epoch: epoch)
+        guard lost || ended else { return }
         DispatchQueue.main.async {
             // The run is going back into this very call as soon as its person faces the screen: nothing is said yet --
             // only a rejoin judged not to be tried leaves the call lost (24.09).
-            guard !MontanaCall.rejoinAwaits(epoch) else { return }
+            guard ended || !MontanaCall.rejoinAwaits(epoch) else { return }
             guard !goneSaid.contains(epoch) else { return }
             goneSaid.insert(epoch)
-            MontanaP2PTrace.mark("call_gone", "tx epoch=\(String(epoch.prefix(8))) to=\(String(conv.prefix(10)))")
+            MontanaP2PTrace.mark("call_gone", "tx epoch=\(String(epoch.prefix(8))) to=\(String(conv.prefix(10))) why=\(ended ? "ended-here" : "lost")")
             var gone = CallSignalOut(ctrl: "call-gone")
+            if ended, let d = ghost?.d, !d.isEmpty { gone.targetDevice = d }
             gone.callSeed = epoch
             gone.epoch = epoch
             E2E.shared.sendCallSignal(to: conv, gone)
@@ -3480,6 +3701,8 @@ enum MontanaWakePush {
                       let readsVoipAnswer: Bool
                       /// The caller goes back into this call when iOS ends its app — declared in their ring (24.09).
                       let rebuilds: Bool
+                      /// The device word of the phone that sent this wake, the word its lane copies carry (11.10.2026, No.61).
+                      let device: String?
                       /// What the ring declares of the caller's build, as the call machine reads any word's caps.
                       var caps: CallCaps { CallCaps(tier: nil, ver: nil, opus_max: nil, hw_aec: nil, sframe: nil,
                                                     av: readsVoipAnswer, rejoin: rebuilds) } }
@@ -3513,9 +3736,14 @@ enum MontanaWakePush {
         // callee raised the audio screen for a video call (the production push always carried video — hence it worked there).
         // `av`: this phone reads an answer off the wake road — the callee learns it here, before any
         // lane of its own exists, and that is the whole point of the flag riding in the ring.
-        let obj: [String: Any] = answer.map { ["a": $0, "s": callSeed ?? ""] }
+        var obj: [String: Any] = answer.map { ["a": $0, "s": callSeed ?? ""] }
             ?? ["o": offer ?? "", "v": video, "s": callSeed ?? "",
                 "n": E2E.myDisplayName(), "g": E2E.myFaceGlyph(), "av": true, "rj": true]
+        // THE WAKE ROAD NAMES THE DEVICE THAT SPEAKS (11.10.2026, No.61): the lane's words carry the device word since No.60, the
+        // wake's did not -- a call born or answered by the wake held no device, and any device of the person could end it. The
+        // word is the call's own (its epoch is the first 16 characters of the seed); a build that reads no «d» ignores it.
+        let word = MontanaCall.deviceWord(epoch: String((callSeed ?? "").prefix(16)))
+        if !word.isEmpty { obj["d"] = word }
         if let j = try? JSONSerialization.data(withJSONObject: obj),
            let gz = try? (j as NSData).compressed(using: .zlib) as Data {
             body.append(gz)
@@ -3531,25 +3759,31 @@ enum MontanaWakePush {
         }
         if let s0 = sealed, s0.base64EncodedString().count > 4600 {
             var bare = Data("ring".utf8); bare.append(0); bare.append(contentsOf: ref.utf8); bare.append(0)
-            let bobj: [String: Any] = ["o": "", "v": video, "s": callSeed ?? "",
+            var bobj: [String: Any] = ["o": "", "v": video, "s": callSeed ?? "",
                                        "n": E2E.myDisplayName(), "g": E2E.myFaceGlyph(), "rj": true]
+            if !word.isEmpty { bobj["d"] = word }
             if let j = try? JSONSerialization.data(withJSONObject: bobj),
                let gz = try? (j as NSData).compressed(using: .zlib) as Data { bare.append(gz) }
             sealed = MTPipe.sealBody(bare, sharedSecret: secret)
         }
         guard let sealedFinal = sealed else { MontanaP2PTrace.mark("wakepush_vtx", "FAIL seal"); finish(-1); return }
         let cw = convW(secret, window: dayWindow())
+        // THE CALLER SAYS IT NAMES ITS DEVICE (11.10.2026, No.61): the node rings every device of a person only for a caller that
+        // says «dw» and only to tokens that said it -- a caller of an older build could not tell the answering device from its siblings.
         let payload = try? JSONSerialization.data(withJSONObject:
-            ["conv": cw, "from_id": mySubId(cw), "env": sealedFinal.base64EncodedString()])
+            ["conv": cw, "from_id": mySubId(cw), "env": sealedFinal.base64EncodedString(), "dw": 1] as [String: Any])
+        // Two roads for a pair in first contact (cardRing): the pipe's own tag, then the card's -- knocked when the first rang nobody.
+        let roads = [payload, answer == nil ? cardRing(conv, secret: secret, ring: sealedFinal) : nil].compactMap { $0 }
+        var road = 0
         // The call ring walks the doors in the network's order and stops where a phone was
         // ACTUALLY rung: a store that holds no subscription for this tag, or whose publisher
         // is down, must hand the ring on rather than swallow it.
         let doors = callDoors(for: "notify")
         func ring(_ i: Int) {
-            guard i < doors.count, let url = URL(string: doors[i] + "/wake-voip") else { finish(-1); return }   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
+            guard i < doors.count, road < roads.count, let url = URL(string: doors[i] + MontanaContour.notifyRoad + "/wake-voip") else { finish(-1); return }   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
             var req = URLRequest(url: url); req.httpMethod = "POST"   // SERVER-DEBT-ACK: the accelerator node (rung 4), not the delivery road
             req.setValue("application/json", forHTTPHeaderField: "content-type")
-            req.httpBody = payload
+            req.httpBody = roads[road]
             // ONE ATTEMPT PER DOOR: the walk itself is the retry — the next door stands beside.
             callPost(req, attempts: 1, tag: "wakepush_vtx") { code, data in
                 // The wake service answers {"sent": n, "of": m, "apns": code} — never "woken":
@@ -3560,13 +3794,14 @@ enum MontanaWakePush {
                 // cannot change that, and the caller must hear it instead of a minute of ringing.
                 let j = data.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]
                 let woken = (j?["sent"] as? Int) ?? (j?["woken"] as? Int) ?? -1
-                MontanaP2PTrace.mark("wakepush_vtx", "code=\(code) woken=\(woken) door=\(i) carry=\(offer == nil ? 0 : 1) to=\(String(conv.prefix(10)))")
+                MontanaP2PTrace.mark("wakepush_vtx", "code=\(code) woken=\(woken) door=\(i) carry=\(offer == nil ? 0 : 1) to=\(String(conv.prefix(10))) d=\(word.isEmpty ? 0 : 1) road=\(road)/\(roads.count)")
                 // The walk teaches the same dead-door memory the call words read: a door silent
                 // to a ring is silent to the answer that must come back through it.
                 if code == 200 { signalDoorAnswered(doors[i]) } else { signalDoorFailed(doors[i], code: code) }
                 if code == 200, woken > 0 { finish(200); return }   // rung — the caller stops here
                 if code == 404 { saw404 = true } else { sawOther = true; lastCode = code }
                 if i + 1 < doors.count { ring(i + 1) }
+                else if road + 1 < roads.count { road += 1; ring(0) }   // the pipe's tag rang nobody: the card's tag, every door again
                 else { finish(saw404 && !sawOther ? 404 : lastCode) }   // every door said «nobody» — or the last real refusal
             }
         }
@@ -3577,33 +3812,95 @@ enum MontanaWakePush {
     static func openRingEnvelope(_ sealed: Data) -> RingPush? {
         for conv in MTPipeBook.all() {
             guard let secret = MTPipeBook.secret(for: conv) else { continue }
-            guard let plain = MTPipe.openBody(sealed, sharedSecret: secret),
-                  let sep1 = plain.firstIndex(of: 0),
-                  let word = String(data: plain[..<sep1], encoding: .utf8),
-                  word == "ring" || word == "answ" else { continue }
-            let afterTag = plain[plain.index(after: sep1)...]
-            guard let sep2 = afterTag.firstIndex(of: 0) else { continue }
-            let ref = String(data: afterTag[..<sep2], encoding: .utf8) ?? ""
-            let gz = plain[plain.index(after: sep2)...]
-            var offer: String? = nil; var video = false; var seed: String? = nil
-            var name: String? = nil; var glyph: String? = nil
-            var answer: String? = nil; var readsAnswer = false; var rebuilds = false
-            if !gz.isEmpty, let j = try? (Data(gz) as NSData).decompressed(using: .zlib) as Data,
-               let obj = try? JSONSerialization.jsonObject(with: j) as? [String: Any] {
-                offer = (obj["o"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                video = (obj["v"] as? Bool) ?? false
-                seed = (obj["s"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                name = (obj["n"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                glyph = (obj["g"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                answer = (obj["a"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                readsAnswer = (obj["av"] as? Bool) ?? false
-                rebuilds = (obj["rj"] as? Bool) ?? false
+            if let ring = openRing(sealed, conv: conv, secret: secret) { return ring }
+        }
+        return nil
+    }
+
+    /// One pipe's try at a call envelope: the walk above and the ring at the card (openCardRing) open it alike.
+    private static func openRing(_ sealed: Data, conv: String, secret: Data) -> RingPush? {
+        guard let plain = MTPipe.openBody(sealed, sharedSecret: secret),
+              let sep1 = plain.firstIndex(of: 0),
+              let word = String(data: plain[..<sep1], encoding: .utf8),
+              word == "ring" || word == "answ" else { return nil }
+        let afterTag = plain[plain.index(after: sep1)...]
+        guard let sep2 = afterTag.firstIndex(of: 0) else { return nil }
+        let ref = String(data: afterTag[..<sep2], encoding: .utf8) ?? ""
+        let gz = plain[plain.index(after: sep2)...]
+        var offer: String? = nil; var video = false; var seed: String? = nil
+        var name: String? = nil; var glyph: String? = nil
+        var answer: String? = nil; var readsAnswer = false; var rebuilds = false; var device: String? = nil
+        if !gz.isEmpty, let j = try? (Data(gz) as NSData).decompressed(using: .zlib) as Data,
+           let obj = try? JSONSerialization.jsonObject(with: j) as? [String: Any] {
+            offer = (obj["o"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            video = (obj["v"] as? Bool) ?? false
+            seed = (obj["s"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            name = (obj["n"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            glyph = (obj["g"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            answer = (obj["a"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            readsAnswer = (obj["av"] as? Bool) ?? false
+            rebuilds = (obj["rj"] as? Bool) ?? false
+            device = (obj["d"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        }
+        // conv is the key the pipe opened with: the callee runs the call under IT (their
+        // native conversation name); one secret, one daily tag — both sides in one queue.
+        return RingPush(conv: conv, ref: ref, offer: offer, video: video,
+                        callSeed: seed, name: name, glyph: glyph,
+                        answer: word == "answ" ? answer : nil, readsVoipAnswer: readsAnswer, rebuilds: rebuilds,
+                        device: device)
+    }
+
+    /// THE RING AT THE CARD (11.10.2026, No.63, the author's word 21:5x MSK: «check T1's call at 21:55 to the iPad, Nana, Business: the
+    /// call did not go through»). A pair in first contact has no pipe tag its callee listens on: the card's owner holds no secret until
+    /// the first letter's encapsulation reaches them, and the ring went where the caller alone stood (measured on both nodes, 18:56:58 to
+    /// 18:57:25Z: NO RECIPIENTS; the pipe's call rows held one row, the caller's own). The owner listens at the card's daily tag
+    /// (registerVoip), and the ring rides there in the first letter's own shape: the encapsulation and its key confirmation, sealed under
+    /// the card's letter key, around the ring sealed under the pipe's key. The owner begets the pipe from it exactly as from a first
+    /// letter out of a push (MontanaCard.accept: the confirmation is mandatory) and opens the ring with the pipe it now holds
+    /// (openCardRing). The node stays blind: a daily tag and a sealed blob, as for the first letter's doorbell (wakeRdv).
+    static let cardRingWord = Data("mt-card-ring".utf8) + Data([0])
+    private static func cardRing(_ conv: String, secret: Data, ring: Data) -> Data? {
+        guard let ct = MTPipeBook.first(for: conv), let inv = MontanaMeeting.invite(forConv: conv) else { return nil }
+        var plain = cardRingWord
+        plain.append(ct)
+        plain.append(Data(MontanaFirstContact.firstConfirm(secret: secret, ct: ct).utf8)); plain.append(0)
+        plain.append(ring)
+        guard let sealed = MTPipe.sealBody(plain, sharedSecret: rdvLetterSecret(inv)) else { return nil }
+        let env = sealed.base64EncodedString()
+        // A call wake carries an envelope of at most 3980 bytes (montana-notify /wake-voip empties a bigger one): a ring with its offer
+        // that does not fit leaves this road to the knock's bare ring, five seconds on (MontanaCall.startCall).
+        guard env.count <= 3900 else {
+            MontanaP2PTrace.mark("wakepush_vtx", "card ring too big bytes=\(env.count) -- the knock's bare ring carries it"); return nil
+        }
+        let cw = rdvConvW(inv, window: dayWindow())
+        return try? JSONSerialization.data(withJSONObject: ["conv": cw, "from_id": mySubId(cw), "env": env, "dw": 1] as [String: Any])
+    }
+    /// How many roads the call walk of this pair has: two while the pair is in first contact at a card (the walk's own bound, twice).
+    static func ringRoads(_ conv: String) -> Int {
+        MTPipeBook.first(for: conv) != nil && MontanaMeeting.invite(forConv: conv) != nil ? 2 : 1
+    }
+
+    /// The owner's side of the ring at the card. The cards this device handed out are tried; the one whose letter key opens the ring
+    /// begets the pipe from the encapsulation it carries, and the ring inside opens with that pipe. Nil when no card of this device
+    /// opens it: the push still gets the system's mandatory report (pushRegistry).
+    static func openCardRing(_ sealed: Data) -> RingPush? {
+        for inv in MontanaCard.outstandingInvites() {
+            guard let plain = MTPipe.openBody(sealed, sharedSecret: rdvLetterSecret(inv)),
+                  cardRingWord.count + 1088 < plain.count, plain.starts(with: cardRingWord) else { continue }
+            let body = plain.dropFirst(cardRingWord.count)
+            let ct = Data(body.prefix(1088))
+            let tail = body.dropFirst(1088)
+            guard let z = tail.firstIndex(of: 0),
+                  let conf = String(data: tail[tail.startIndex..<z], encoding: .utf8) else { continue }
+            guard let ref = MontanaCard.accept(firstLetter: ct, invite: inv.base64urlNoPad, conf: conf),
+                  let secret = MTPipeBook.secret(for: ref) else {
+                MontanaP2PTrace.mark("wakepush_vrx", "card ring -- the card refused its encapsulation"); return nil
             }
-            // conv is the key the pipe opened with: the callee runs the call under IT (their
-            // native conversation name); one secret, one daily tag — both sides in one queue.
-            return RingPush(conv: conv, ref: ref, offer: offer, video: video,
-                            callSeed: seed, name: name, glyph: glyph,
-                            answer: word == "answ" ? answer : nil, readsVoipAnswer: readsAnswer, rebuilds: rebuilds)
+            guard let ring = openRing(Data(tail[tail.index(after: z)...]), conv: ref, secret: secret) else {
+                MontanaP2PTrace.mark("wakepush_vrx", "card ring -- the pipe stood up, the ring inside did not open ref=\(String(ref.prefix(10)))"); return nil
+            }
+            MontanaP2PTrace.mark("wakepush_vrx", "card ring -- the pipe stood up ref=\(String(ref.prefix(10)))")
+            return ring
         }
         return nil
     }

@@ -61,7 +61,8 @@ final class MontanaDeliveryEngine {
                                                  quoteText: note.userInfo?["quoteText"] as? String,
                                                  quoteMid: note.userInfo?["quoteMid"] as? String,
                                                  linkPreview: note.userInfo?["linkPreview"] as? String,
-                                                 sentAt: note.userInfo?["sentAt"] as? Double)
+                                                 sentAt: note.userInfo?["sentAt"] as? Double,
+                                                 own: note.userInfo?["own"] as? Bool ?? false)
         }
         // The wire said which transport the frame actually left by — the bubble's tag is refined
         // by fact, not by what it looked like when the letter was created.
@@ -80,10 +81,50 @@ final class MontanaDeliveryEngine {
     /// letter to the node (the box keeps it). Only when neither is known does the arrival stand in,
     /// and then it is the honest best we have. Measured 01.09: two pictures sent at 17:49 from a
     /// build that stamps no name wore 18:47 — the minute this phone woke and collected them.
-    static func letterMoment(mid: String, sentAt: Double?) -> Double {
+    ///
+    /// A CORRESPONDENT'S BIRTH STANDS NO FURTHER AHEAD THAN THIS PHONE'S CLOCK AND THE TOLERANCE (spec Stage 9 §Ordering, the note
+    /// beside ChatStore.before: «clamp into [..., local receive time + tolerance]; own messages (multi-device echo) are not clamped»;
+    /// the tolerance is the stage's audit closure S9-F2: two minutes; the author's word 11.10.2026 20:1x MSK: «check the whole
+    /// architecture of the chats' time chains, so there are no holes by the constitution»). The name's millisecond is the
+    /// sender's claim, and a claim of a far year stood under every later letter of the chat for good. A letter of my own other
+    /// device keeps its own moment.
+    static let birthTolerance: Double = 120
+    static func letterMoment(mid: String, sentAt: Double?) -> Double { letterMoment(mid: mid, sentAt: sentAt, own: false) }
+    static func letterMoment(mid: String, sentAt: Double?, own: Bool) -> Double {
+        let claimed = claimedMoment(mid: mid, sentAt: sentAt)
+        return own ? claimed : min(claimed, Date().timeIntervalSince1970 + birthTolerance)
+    }
+    private static func claimedMoment(mid: String, sentAt: Double?) -> Double {
         if let born = ChatStore.birthMs(fromMid: mid) { return born }
         if let sentAt, sentAt > 0 { return sentAt }
         return Date().timeIntervalSince1970
+    }
+
+    /// A letter of this person's other device lands as mine: a row stands on my side, «sent» until the correspondent's receipt
+    /// moves it, burning no coin again (its own device burned the bubble's) and ringing nothing. A word that changes no row -- a
+    /// name, a face, a receipt, a presence, a call written as a letter -- is that device's word to the correspondent, applied
+    /// to nobody here.
+    @MainActor private func landOwn(_ store: ChatStore, from: String, mid: String, text: String, transport: String?,
+                                    quoteText: String?, quoteMid: String?, linkPreview: String?, sentAt: Double?) {
+        let sid = "mid:" + mid
+        let kind = MontanaNotify.kind(for: text)
+        let row = !isControlMarker(text) || text.hasPrefix(mediaMark) || text.hasPrefix(voiceMark) || text.hasPrefix(stickerMark)
+        guard row else {
+            MontanaP2PTrace.markFolded("rx_own", "word of another device of these words kind=\(kind) -- applied to nobody", window: 30, key: kind)
+            return
+        }
+        guard store.messages[from]?.contains(where: { $0.msgId == sid }) != true else {
+            MontanaP2PTrace.mark("rx_own", mid: mid, "the row already stands")
+            return
+        }
+        let born = Self.letterMoment(mid: sid, sentAt: sentAt, own: true)
+        var m = Message(text: text, isFromMe: true, time: hhmm(at: born),
+                        replyText: (quoteText?.isEmpty == false) ? quoteText : nil,
+                        deliveryStatus: .sent, msgId: sid, createdAt: born,
+                        replyToId: store.localId(forMid: quoteMid, chat: from), transport: transport)
+        m.linkPreview = linkPreview
+        let landed = store.append(from, m)
+        MontanaP2PTrace.mark("rx_own", mid: mid, "landed=\(landed ? 1 : 0) kind=\(kind) from=\(String(from.prefix(10)))")
     }
 
     /// Letters that arrived before the history was read — replayed in arrival order the moment it is.
@@ -101,7 +142,7 @@ final class MontanaDeliveryEngine {
     func receive(from: String, mid: String, text: String, senderName: String? = nil, senderGlyph: String? = nil,
                  transport: String?,
                  quoteText: String? = nil, quoteMid: String? = nil, linkPreview: String? = nil,
-                 sentAt: Double? = nil) {
+                 sentAt: Double? = nil, own: Bool = false) {
         // A WORD OF THEIRS ENDS THE INTRODUCTION (26.09): every road lands here, so the proof is read here, before
         // the row lands and its receipt leaves -- a receipt to a peer still in the introduction waits for the pipe.
         // The queue turns at once from the knock at their point to the node and the wake.
@@ -116,7 +157,8 @@ final class MontanaDeliveryEngine {
         if !store.historyLoaded {
             parkedInbound.append { [weak self] in
                 self?.receive(from: from, mid: mid, text: text, senderName: senderName, senderGlyph: senderGlyph,
-                              transport: transport, quoteText: quoteText, quoteMid: quoteMid, linkPreview: linkPreview, sentAt: sentAt)
+                              transport: transport, quoteText: quoteText, quoteMid: quoteMid, linkPreview: linkPreview, sentAt: sentAt,
+                              own: own)
             }
             MontanaP2PTrace.markFolded("inbound_parked", "history not read yet n=\(parkedInbound.count)", window: 10)
             return
@@ -127,11 +169,19 @@ final class MontanaDeliveryEngine {
         if store.refuses(from) {
             // A letter (not a passing control word) is buried under the feed's tombstone: a resend
             // after an unblock meets it and is never shown — the reference delivers it never.
-            if !isControlMarker(text) { store.deletedMids.insert("mid:" + mid) }
+            if !isControlMarker(text) { store.bury(["mid:" + mid]) }
             MontanaP2PTrace.markFolded("rx_blocked", "door peer=\(String(from.prefix(10)))", window: 60, key: "door:" + from)
             return
         }
         let sid = "mid:\(mid)"
+        // THE PERSON'S OWN LETTER FROM ANOTHER OF THEIR DEVICES (MTNodeWire.authorHolds, 11.10.2026, No.62): a word the same
+        // words wrote is mine, whichever device wrote it and whatever road brought it -- never the correspondent's name, face,
+        // banner or receipt. A call's signal keeps its own road: the call machine hears its sibling there («answered elsewhere»).
+        if own, !text.hasPrefix(callSignalMark) {
+            landOwn(store, from: from, mid: mid, text: text, transport: transport, quoteText: quoteText, quoteMid: quoteMid,
+                    linkPreview: linkPreview, sentAt: sentAt)
+            return
+        }
         // A control letter that already spoke is not heard twice (the box repeats; 15.09 13:38).
         // Call and draft words carry a fresh name on every copy and pass; the rest are named once.
         // A ROW LETTER IS NEVER A CONTROL WORD HERE (1638): media, voice and stickers dedup by the
@@ -1168,6 +1218,7 @@ final class MontanaDeliveryEngine {
             let verdicts = store.rowVerdicts(facing.map { $0.mid })
             store.liftClockRed(riding: riding)   // once: the reds of silence an older build painted on letters still riding
             store.paintOrphanSending(queueMids: queueMids)
+            MTCoinSend.due(store)   // a coin letter of mine past its day gives its coins back (10.10)
             guard !facing.isEmpty else { return }
             self.q.async {
                 var a = self.load(); let n = a.count
