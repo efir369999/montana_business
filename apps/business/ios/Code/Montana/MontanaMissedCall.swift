@@ -90,7 +90,7 @@ enum MontanaMissedCall {
     /// The chat a delivered notice speaks of: a call's token read back, or the chat a letter's notice names.
     static func chat(of info: [AnyHashable: Any]) -> String? {
         if let t = info["call_token"] as? String, let c = conv(forToken: t) { return c }
-        return info["chat"] as? String
+        return (info["chat"] as? String).map { c in MTNoticeAlias.open(c) }   // a letter's notice names its chat by this phone's alias
     }
 
     /// The one look of a missed call (the author's word 09.09: one variant, never two): the red

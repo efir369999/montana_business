@@ -2448,6 +2448,8 @@ final class MontanaCall: NSObject {
                 break
             }
             guard !unreachable, from == peer else { break }
+            // A ringing word after the talk began rings nothing (No.66: the iPhone 17, 12:35:37Z, 5 s into a talk, a late copy or a sibling).
+            guard connectedAt == nil else { MontanaP2PTrace.markFolded("call_ringing", "late -- the talk stands", window: 30); break }
             tlog("received call-ringing (peer's phone is ringing)")
             peerRinging = true; reachTimer?.invalidate(); reachTimer = nil
             releaseHeldIce("ringing")   // the call is born over there: the candidates may leave now
@@ -5450,8 +5452,10 @@ extension MontanaCall: RTCPeerConnectionDelegate {
                 self.ensureAudioActive()
             }
             if let uuid = callUUID, isInitiator || rejoining {
-                // A rejoined call's clock is the call's own: the system resumes it from its first connected moment.
-                provider.reportOutgoingCall(with: uuid, connectedAt: rejoining ? connectedAt : nil)   // system call timer
+                // THE SYSTEM'S CLOCK IS THE CALL'S ONE CONNECTED MOMENT (the author's words 12.10.2026 13:4x and 15:4x MSK: «after
+                // reconnections the duration must go on, not start anew»): nil only at the first connect (the system's now), the same
+                // moment at every reconnect and every rejoin -- the island and the locked screen count on, never from zero.
+                provider.reportOutgoingCall(with: uuid, connectedAt: connectedAt)   // system call timer
             }
             if freshConnection {
                 // The run that came back has a new audio route: a video call speaks aloud again, as at its first connect.
@@ -5723,17 +5727,27 @@ private struct MTCallTimeLine: View {
     var body: some View {
         HStack(spacing: 5) {
             MTCallLight()
-            if model.state == "connected", let since = model.startedAt {
+            if let since = model.talkSince {
                 Text(timerInterval: since...Date.distantFuture, countsDown: false)
             } else if !statusText.isEmpty {
                 Text(LocalizedStringKey(statusText))
             }
         }
+        .modifier(MTCallTimeSaid(shows: model.talkSince == nil ? statusText : "clock"))
         .font(.system(size: 17, weight: .medium)).monospacedDigit().foregroundColor(.white.opacity(0.85))
         .lineLimit(1).fixedSize()
         .shadow(color: .black.opacity(0.5), radius: 3)
         .frame(maxWidth: .infinity)
         .frame(height: Self.height)
+    }
+}
+
+/// WHAT THE CALL'S TIME SHOWS IS SAID TO THE DIARY when it changes (12.10.2026, No.66: «the seconds do not run» stood unprovable -- no
+/// line said whether the screen showed the clock or a stage's word).
+private struct MTCallTimeSaid: ViewModifier {
+    let shows: String
+    func body(content: Content) -> some View {
+        content.onChange(of: shows, initial: true) { _, s in MontanaP2PTrace.markChanged("call_time", "shows=" + (s.isEmpty ? "-" : s)) }
     }
 }
 
@@ -5966,6 +5980,10 @@ final class CallUIModel: ObservableObject {
     @Published var startedAt: Date?
     func startTimer() { startedAt = Date() }
     func stopTimer() { startedAt = nil }
+    /// THE CLOCK STANDS FROM THE CALL'S ONE CONNECTED MOMENT TO ITS END (the author's word 12.10.2026 15:4x MSK, No.66: «the seconds of
+    /// the talk do not run -- not fixed, it was on T1 in the morning too»): every face of the time reads this one moment, whatever the
+    /// state's last word -- a reconnect says itself on its own line and the seconds run on under it.
+    var talkSince: Date? { state == "idle" || state == "incoming" ? nil : startedAt }
 }
 
 // The call screen lives in its OWN window above EVERYTHING (sheets, navigation, chat keyboard) —
@@ -5975,6 +5993,22 @@ final class CallUIModel: ObservableObject {
 // minimized, shown when it comes back, taken down when the call ends. It used to be rebuilt on every
 // return -- a new root for the call screen mid-call, a share's end included -- and the returns were
 // exactly where the corner picture stopped answering and the back camera stayed mirrored.
+/// THE CALL'S WINDOW SAYS WHERE A FINGER LANDED AND WHAT TOOK IT (12.10.2026, No.66: on the iPhone 17 the arrow folded nothing in nine
+/// calls, and the diary could not tell a finger that never came from one the screen lost): one line at each touch's beginning -- its
+/// place in the window and the kind of view the system gave it to. Measured only; nothing is decided here.
+final class MTCallWindow: UIWindow {
+    override func sendEvent(_ event: UIEvent) {
+        if event.type == .touches, let all = event.allTouches {
+            for t in all where t.phase == .began {
+                let p = t.location(in: self)
+                let hit = t.view.map { v in String(String(describing: type(of: v)).prefix(48)) } ?? "-"
+                MontanaP2PTrace.mark("call_touch", "x=\(Int(p.x)) y=\(Int(p.y)) hit=\(hit)")
+            }
+        }
+        super.sendEvent(event)
+    }
+}
+
 final class CallWindowPresenter {
     static let shared = CallWindowPresenter()
     private var window: UIWindow?
@@ -5991,7 +6025,7 @@ final class CallWindowPresenter {
             if show, self.window == nil {
                 let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
                 guard let scene = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first else { return }
-                let w = UIWindow(windowScene: scene)
+                let w = MTCallWindow(windowScene: scene)
                 w.windowLevel = .alert + 1
                 w.backgroundColor = .black
                 let host = MontanaHost.make(CallOverlayView(model: CallUIModel.shared))
@@ -6138,7 +6172,10 @@ enum MontanaCallWiring {
                 // connected moment, kept across a reconnect and a rejoin.
                 let state = MontanaCall.stateSnapshot
                 m.state = state; m.peer = peer; m.video = MontanaCall.shared.isVideo; m.tick += 1
-                if state == "connected" { m.startedAt = MontanaCall.shared.connectedAt ?? m.startedAt ?? Date() }
+                // The machine's one connected moment reaches the screen with whichever word of the state comes after it: a hop that
+                // missed «connected» never leaves the clock unset.
+                if state != "idle", let c = MontanaCall.shared.connectedAt { m.startedAt = c }
+                else if state == "connected", m.startedAt == nil { m.startedAt = Date() }
                 if state == "idle" { m.stopTimer(); m.fold(false, why: "idle"); m.muted = false; m.speaker = false; m.miniCorner = 1
                     m.peerRinging = false; m.connecting = false; m.awaitingAccept = false; m.peerImage = nil }
                 else if let p = peer { loadPeerImage(p) }
@@ -7018,7 +7055,7 @@ struct CallOverlayView: View {
             Button { model.fold(false, why: "pill") } label: {
                 HStack(spacing: 8) {
                     Image(systemName: MontanaCall.shared.isVideo ? "video.fill" : "phone.fill")
-                    if model.state == "connected", let since = model.startedAt {
+                    if let since = model.talkSince {
                         Text(timerInterval: since...Date.distantFuture, countsDown: false)
                     } else { Text("Call") }
                 }.font(.footnote.bold()).foregroundColor(.white)
@@ -7197,7 +7234,7 @@ struct CallOverlayView: View {
                     HStack(spacing: 6) {
                         MTCallLight()
                         Text(LocalizedStringKey("Montana Audio Call"))
-                        if model.state == "connected", let since = model.startedAt {
+                        if let since = model.talkSince {
                             Text(verbatim: "—")   // USER-DATA: a dash glyph
                             Text(timerInterval: since...Date.distantFuture, countsDown: false)
                         } else if !statusText.isEmpty {
@@ -7206,6 +7243,7 @@ struct CallOverlayView: View {
                         }
                     }
                     .font(.title3).monospacedDigit().foregroundColor(.white.opacity(0.6))
+                    .modifier(MTCallTimeSaid(shows: model.talkSince == nil ? statusText : "clock"))
                     Text(MontanaCall.shared.callerName(model.peer ?? ""))
                         .font(.system(size: landscape ? 28 : 40, weight: .bold)).foregroundColor(.white)
                         .lineLimit(1).minimumScaleFactor(0.6)

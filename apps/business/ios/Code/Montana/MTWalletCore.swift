@@ -1401,7 +1401,7 @@ enum MTCoinShow {
 /// this side the level's coins a second -- the same rule on the other side's phone for its own person, each by their own level,
 /// whatever the chat's Money Flow; nothing burns any more. A second mints once by its window, whichever beat asks.
 @MainActor enum MTCallMint {
-    static let refPrefix = "callmint:"
+    nonisolated static let refPrefix = "callmint:"   // read off the screen's thread (MTTimeChain.source)
     static var wanted: Bool { MontanaCall.shared.mintsTalk }
     /// THE SECONDS ARE THE CALL'S CLOCK, NOT THE BEAT'S (12.10.2026, the author's word 11:5x MSK: «for calls coins must be credited
     /// to both correspondents by their level for every second»): a beat minted one second, and a beat is a second plus its own
@@ -1942,7 +1942,7 @@ struct MTCoinCounts {
     var sent = 0
     /// The tallies saturate, never trap (the coin audit's ninth point, 05.10.2026 21:4x MSK): a sum past the integer is shown at
     /// its edge, and the app lives.
-    private static func plus(_ a: Int, _ b: Int) -> Int {
+    static func plus(_ a: Int, _ b: Int) -> Int {
         let (s, over) = a.addingReportingOverflow(b)
         return over ? (0 < b ? Int.max : Int.min) : s
     }
@@ -2068,6 +2068,8 @@ struct MTCoinCounts {
         }
         return (moves, taken)
     }
+    /// A book's balance as its file holds it -- a person's on this phone's shelf (MTSeats.shelfCoins) -- read off the screen's thread.
+    nonisolated static func balance(of file: URL) -> Int { decode(file).0.reduce(0) { s, e in MTCoinCounts.plus(s, e.signed) } }
     private func adopt(_ r: Reading) {
         guard reading === r else { return }   // a reading of the person who left the seat
         reading = nil
@@ -2246,6 +2248,7 @@ struct MTCoinCounts {
         MTTimeChainTip.shared.add(fresh, book: balance)   // and this device's lane, whose tip rides one round trip (04.10 16:34)
         guard let file, !fresh.isEmpty else { return }
         MTCoinVault.shared.soon(now ? "move" : "moves", after: now ? 1 : 60)   // a move between people reaches the seed's devices at once
+        MTCoinTx.mintSoon()   // and the chain takes what the book holds above it within one window of τ1
         if let was = pendingFile, was != file { flush() }
         pendingFile = file
         for e in fresh {
@@ -2516,7 +2519,7 @@ enum MTCoinSend {
     @MainActor static func transfer(_ coins: Int, to chat: Chat, store: ChatStore) async -> Bool {
         await move(coins, to: chat, store: store, nonce: nil) != nil
     }
-    /// The same transfer, its record's id said (a transfer to one's own other account lands it in that person's book: MTSeats.landTransfer).
+    /// The same transfer, its record's id said (a transfer to one's own other account lands it as one pair: MTCoinTx.landOwn).
     @MainActor static func transferId(_ coins: Int, to chat: Chat, store: ChatStore) async -> String? {
         await move(coins, to: chat, store: store, nonce: nil)
     }
@@ -2837,8 +2840,136 @@ enum MTAutoReact {
 }
 
 
-/// THE COIN TRANSFER IS ONE RECORD ON THE NODES (Montana's Audit/COIN-TX-V1.md, the one source of the format; the author's words
-/// 11.10.2026 19:5x-20:2x MSK: «a person is their seed and everything is in it»; «so I can pay them in any scenario»; «either the coins left or not -- there is no third»;
+// COIN-RULES BEGIN -- tools/mt-coin-rules-check.py compiles this region as it stands with tools/coin-rules-tests.swift (COIN-TX-V3
+// section 9: the vectors V1, V2, V3, V6 and the fold's steps); it reads nothing but Foundation and CryptoKit.
+/// THE RULES OF A KEY'S CHAIN, ONE PLACE ON THE PHONE (Audit/COIN-TX-V3.md sections 1, 3 and 4): the fields a kind uses, the time a key
+/// may mint, the blind and the receiver's commitment, and one record folded onto its key's state -- the rules the chain's node folds by
+/// (montana-node-store.py _tx_step) and the Explorer (foldChain), each reading the one document on its own. The phone's sends, its
+/// receipts and its copy of the chains ask them here.
+enum MTCoinChainRules {
+    static let v2Cut: Int64 = 1_792_443_600       // NOT-UI: 20.10.2026 00:00 MSK, the node's TX_V2_CUT (COIN-TX-V3 section 8)
+    static let coinEpoch: Int64 = 1_788_210_000   // NOT-UI: 01.09.2026 00:00 MSK, the node's TX_COIN_EPOCH (section 3)
+    /// τ1, THE MINTING'S WINDOW (the author's word 12.10.2026 15:5x MSK: «once in τ1 -- 60 seconds must be the window of time»): the
+    /// shortest interval a MINT covers (sections 3, 7) and how often the phone asks its chain to take what the book holds above it.
+    static let window: Int64 = 60
+    static let zero = String(repeating: "0", count: 64)
+    enum Kind: UInt8 { case send = 1, recv = 2, mint = 3, refund = 4, genesis = 5 }
+    /// A record as the rules read it; a record of the layouts before kinds is a send that names no receiver.
+    struct Rec { let id: String; let version: UInt8; let kind: UInt8; let amount: Int64; let from: String; let to: Data; let ref: String; let a: UInt64; let b: UInt64 }
+    /// A key's state folded over its chain (section 3).
+    struct St: Equatable { var head = MTCoinChainRules.zero; var height = 0; var birth: Int64 = 0; var mintEnd: Int64 = 0; var proven: Int64 = 0; var declared: Int64 = 0; var v3 = false; var lastAt: Int64 = 0 }
+    struct SendInfo { let from: String; let amount: Int64; let at: Int64; let to: Data; let dec: Int64 }
+    /// A(x) of section 4: what the seconds 1..x of a key's life may mint -- 2 x min(13, max(1, bit_length(s) - 1)) a second.
+    nonisolated static func timeA(_ x: Int64) -> Int64 {
+        var total: Int64 = 0, lo: Int64 = 1, k: Int64 = 0
+        while 0 < x, lo <= x {
+            let hi = min(x, 2 * lo - 1)
+            total += (hi - lo + 1) * min(13, max(1, k))
+            lo = 2 * lo; k += 1
+        }
+        return 2 * total
+    }
+    nonisolated static var genesisCap: Int64 { timeA(v2Cut - coinEpoch) }
+    /// Section 1: a field its kind does not use is zero; a SEND names its commitment, a RECV and a REFUND the SEND they settle, and the
+    /// announced part of a SEND or RECV (t0) is never above its amount -- as the node's reader holds them.
+    nonisolated static func fieldsHold(kind: UInt8, amount: UInt64, pair: Data, to: Data, ref: Data, a: UInt64, b: UInt64) -> Bool {
+        let none = Data(count: 32)
+        switch Kind(rawValue: kind) {
+        case .send?: return ref == none && b == 0 && to != none && a <= amount
+        case .recv?: return pair == none && b == 0 && ref != none && a <= amount
+        case .mint?: return pair == none && to == none && ref == none
+        case .refund?: return pair == none && to == none && ref != none && a == 0 && b == 0
+        case .genesis?: return pair == none && to == none && ref == none && a == 0 && b == 0
+        case nil: return false
+        }
+    }
+    /// The blind of a SEND: HMAC-SHA-256 under the pair's secret over ASCII mt-coin-blind and the SEND's nonce (section 1).
+    nonisolated static func blind(secret: Data, nonce: Data) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: Data("mt-coin-blind".utf8) + nonce, using: SymmetricKey(data: secret)))
+    }
+    /// The receiver's commitment: SHA-256 of ASCII mt-coin-to, the receiver's from (32 bytes) and the blind (section 1).
+    nonisolated static func commitment(from: Data, blind: Data) -> Data { Data(SHA256.hash(data: Data("mt-coin-to".utf8) + from + blind)) }
+    nonisolated static func bytes(_ s: String) -> Data? {
+        guard s.count % 2 == 0 else { return nil }
+        var out = Data(); var i = s.startIndex
+        while i < s.endIndex {
+            let j = s.index(i, offsetBy: 2)
+            guard let b = UInt8(s[i..<j], radix: 16) else { return nil }
+            out.append(b); i = j
+        }
+        return out
+    }
+    /// One record folded onto its key's state by the nodes' rules: the next state, or nil for a record that breaks a rule; wait for a
+    /// RECV or REFUND whose SEND is not folded yet.
+    nonisolated static func step(_ s: St, _ p: Rec, _ at: Int64, _ sends: [String: SendInfo], _ settled: Set<String>) -> (next: St?, wait: Bool) {
+        var n = s
+        n.head = p.id; n.height += 1; n.lastAt = max(at, s.lastAt)
+        if s.height == 0 { n.birth = at; n.mintEnd = at }
+        let a = p.amount
+        if p.version == 2 {
+            // EVERY TRANSFER MOVES ITS BALANCE (section 3, fold-2; the author's words 12.10.2026 12:1x MSK: «all transfers must be
+            // simply correct, not versions»): after the chain opened, a send that names no receiver spends as a SEND, proven first
+            guard s.v3 else { return (n, false) }
+            if s.proven + s.declared < a { return (nil, false) }
+            let d = max(0, a - s.proven)
+            n.proven = s.proven - (a - d); n.declared = s.declared - d
+            return (n, false)
+        }
+        n.v3 = true
+        switch Kind(rawValue: p.kind) {
+        case .genesis?:
+            if s.v3 || (0 < a && v2Cut <= at) || genesisCap < a { return (nil, false) }
+            n.declared = a
+        case .mint?:
+            let t0 = Int64(p.a), t1 = Int64(p.b)
+            if s.height == 0 || t0 < s.mintEnd || t1 < t0 + 60 || at < t1 { return (nil, false) }
+            if timeA(t1 - s.birth) - timeA(t0 - s.birth) < a { return (nil, false) }
+            n.proven = s.proven + a; n.mintEnd = t1
+        case .send?:
+            let dec = Int64(p.a)
+            if s.proven + s.declared < a || dec != max(0, a - s.proven) { return (nil, false) }
+            n.proven = s.proven - (a - dec); n.declared = s.declared - dec
+        case .recv?, .refund?:
+            guard let S = sends[p.ref] else { return (nil, true) }
+            if S.amount != a || settled.contains(p.ref) { return (nil, false) }
+            if p.kind == Kind.recv.rawValue {
+                guard let f = bytes(p.from), S.dec == Int64(p.a), commitment(from: f, blind: p.to) == S.to else { return (nil, false) }
+            } else if S.from != p.from || at < S.at + 86_400 {
+                return (nil, false)
+            }
+            n.proven = s.proven + a - S.dec; n.declared = s.declared + S.dec
+        case nil:
+            return (nil, false)
+        }
+        return (n, false)
+    }
+}
+// COIN-RULES END
+
+/// THE BALANCE AS ITS CHAIN HOLDS IT (COIN-TX-V3 section 3; the chairman's task 12.10.2026, No.65: «the balance figure stays one, and
+/// beneath it the split proven / declared»): what the person's own chain proves by mints and receipts, and what its opening announced.
+/// This phone's own copy of the chains says it when the person keeps one (MTCoinReplica, an independent fold); otherwise the chain's
+/// node does (POST /tx-head), and a word of the node never stands over the copy's fresher one. Nothing before the chain opened.
+@MainActor final class MTCoinSplit: ObservableObject {
+    static let shared = MTCoinSplit()
+    struct Split: Equatable { let proven: Int64; let declared: Int64; let fromCopy: Bool; let at: TimeInterval; let height: Int }
+    @Published private(set) var split: Split?
+    /// THE NEWEST STATE OF THE CHAIN SPEAKS, WHOEVER FOLDED IT (the author's words 12.10.2026 15:5x MSK: «the available depends on the
+    /// network and the confirmed ... everything at once»): the copy's fold stood an hour over every fresher word of the node, so a RECV or
+    /// a MINT the node had taken waited for the copy's next round. The chain's height says which word is newer; one height is one state.
+    func heard(proven: Int64, declared: Int64, opened: Bool, fromCopy: Bool, height: Int) {
+        guard opened else { return }
+        if let s = split, height < s.height { return }
+        let now = Date().timeIntervalSince1970
+        if split?.proven != proven || split?.declared != declared || split?.height != height {
+            split = Split(proven: proven, declared: declared, fromCopy: fromCopy, at: now, height: height)
+        }
+        MontanaP2PTrace.markFolded("coin_split", "proven=\(proven) declared=\(declared) copy=\(fromCopy ? 1 : 0)", window: 600)
+    }
+}
+
+/// THE COIN TRANSFER IS ONE RECORD ON THE NODES (Audit/COIN-TX-V1.md; the author's words 11.10.2026 19:5x-20:2x MSK: «a person is
+/// their seed and everything is in it»; «so I can pay them in any scenario»; «either the coins left or not -- there is no third»;
 /// «professional, in the TimeChain, for auditors»). A coin letter carried the coins inside a letter, so their fate was the letter's:
 /// a build that buries the coin link (2162-2179) dropped it and the coins stood a day nowhere (the critic 11.10, B-1). The record is
 /// signed by the seed's coin key and laid on the nodes' append-only log; a node's 200 is the moment the coins left, and the
@@ -2850,6 +2981,7 @@ enum MTCoinTx {
     static let backPrefix = "txback:"     // NOT-UI: the book's name of a debit no node took
     static let link = "https://montana.xxx/explorer/#tx="   // NOT-UI: the transfer's confirmation link (the Explorer)
     static let explorer = URL(string: "https://montana.xxx/explorer/") ?? URL(fileURLWithPath: "/")   // NOT-UI: the Explorer's page
+    static let keyLink = "https://montana.xxx/explorer/#key="   // NOT-UI: a coin key's whole chain in the Explorer
     /// THE CHAINS' NODES (Audit/COIN-TX-V2.md): the protocol's two nodes, sorted by name, each with its one door -- Moscow and
     /// Amsterdam; a key's chain lives on the one at the index of the key tag's first byte. Every phone and the Explorer read the same
     /// table, so a chain never splits; a node not in it (Lauterbourg keeps no transfers) is no chain node.
@@ -2859,7 +2991,10 @@ enum MTCoinTx {
     private static let signed2 = Data("mt-coin-tx-v2".utf8)
     private static let pairInfo = Data("mt-coin-pair-v1".utf8)
     static let zero = String(repeating: "0", count: 64)
-    struct Record { let id: String; let version: UInt8; let coins: Int; let birthMs: UInt64; let nonce: Data; let pair: Data; let prev: String; let from: String; let bytes: Data }
+    struct Record {
+        let id: String; let version: UInt8; let coins: Int; let birthMs: UInt64; let pair: Data; let prev: String; let from: String; let bytes: Data
+        var kind: UInt8 = 1; var to = Data(); var ref = ""; var a: UInt64 = 0; var b: UInt64 = 0; var nonce = Data()   // version 3's fields (COIN-TX-V3)
+    }
     enum Word: Equatable { case left, notLeft, unknown, behind }
 
     private static let keyLock = NSLock()
@@ -2872,6 +3007,14 @@ enum MTCoinTx {
         keyLock.lock()
         if let c = keyCache, c.words == tag { keyLock.unlock(); return (c.pk, c.sk) }
         keyLock.unlock()
+        guard let h = derive(words) else { return nil }
+        keyLock.lock(); keyCache = (tag, h.pk, h.sk); keyLock.unlock()
+        return (h.pk, h.sk)
+    }
+    /// One key's hands: the person seated (keys()) or a person on this phone's shelf (derive) -- the record is theirs, signed by them.
+    struct Hands { let pk: Data; let sk: Data; var from: String { MTCoinTx.keyTag(pk) } }
+    /// The coin key of any words this phone holds, derived anew (never cached: a shelf's words are asked rarely).
+    static func derive(_ words: String) -> Hands? {
         guard let master = MontanaQueueKeys.masterSeed(words), master.count == 64 else { return nil }
         var seed = [UInt8](repeating: 0, count: 32)
         let role = Array("mt-coin-tx".utf8)
@@ -2884,8 +3027,7 @@ enum MTCoinTx {
         guard rc == 0 else { return nil }
         var pk = [UInt8](repeating: 0, count: 1952), sk = [UInt8](repeating: 0, count: 4032)
         guard mt_mldsa_keypair_from_seed(seed, &pk, &sk) == 0 else { return nil }
-        keyLock.lock(); keyCache = (tag, Data(pk), Data(sk)); keyLock.unlock()
-        return (Data(pk), Data(sk))
+        return Hands(pk: Data(pk), sk: Data(sk))
     }
     static func hex(_ d: Data) -> String { d.map { b in String(format: "%02x", b) }.joined() }
     private static func unhex(_ s: String) -> Data? {
@@ -2921,7 +3063,8 @@ enum MTCoinTx {
     static func waiting(nonce: Data) -> Bool {
         guard let dir = MTTimeChainPlace.dir() else { return false }
         for n in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [] where n.hasPrefix("tx-pending-") && n.hasSuffix(".rec") {
-            if let rec = try? Data(contentsOf: dir.appendingPathComponent(n)), 37 <= rec.count, Data(rec[21..<37]) == nonce { return true }
+            guard let rec = try? Data(contentsOf: dir.appendingPathComponent(n)) else { continue }
+            if let r = read(rec), r.nonce == nonce { return true }
         }
         return false
     }
@@ -2953,6 +3096,7 @@ enum MTCoinTx {
         let b = [UInt8](rec)
         guard 5 <= b.count, Data(b[0..<4]) == magic else { return nil }
         let v = b[4]
+        if v == 3 { return read3(rec) }
         let end: Int, keyAt: Int, total: Int, prefix: Data
         switch v {
         case 1: end = 2021; keyAt = 69; total = size; prefix = signed1
@@ -2964,8 +3108,10 @@ enum MTCoinTx {
         guard 0 < coins, coins <= UInt64(Int.max) else { return nil }
         let body = Data(b[0..<end]), pk = Data(b[keyAt..<end]), sig = Data(b[end..<total])
         guard MontanaPQ.verify(pubkey: pk, message: prefix + body, signature: sig) else { return nil }
-        return Record(id: name(rec), version: v, coins: Int(coins), birthMs: u64(b, 13), nonce: Data(b[21..<37]), pair: Data(b[37..<69]),
-                      prev: v == 2 ? hex(Data(b[69..<101])) : "", from: keyTag(pk), bytes: rec)
+        var r = Record(id: name(rec), version: v, coins: Int(coins), birthMs: u64(b, 13), pair: Data(b[37..<69]),
+                       prev: v == 2 ? hex(Data(b[69..<101])) : "", from: keyTag(pk), bytes: rec)
+        r.nonce = Data(b[21..<37])   // the pay's own nonce (payNonce), found again by its two ends
+        return r
     }
     private static func doors() -> [String] { MontanaWakePush.oneDoorPerNode(MontanaWakePush.orderedBases(for: "vault")) }
     /// A door's chain node: the node whose door it is, nil for any other door.
@@ -3011,8 +3157,8 @@ enum MTCoinTx {
         let id = name(rec)
         let b = [UInt8](rec)
         guard 5 <= b.count else { return .notLeft }
-        if b[4] == 2, b.count == size2 {
-            guard let door = chainDoor(keyTag(Data(b[101..<2053]))) else { return .notLeft }
+        if b[4] == 2 && b.count == size2 || b[4] == 3 && b.count == size3 {
+            guard let door = chainDoor(keyTag(b[4] == 2 ? Data(b[101..<2053]) : Data(b[182..<2134]))) else { return .notLeft }
             let a = await ask(door + "/tx-put", ["rec": rec.base64EncodedString()])
             if a.code == 200, (a.obj?["id"] as? String) == id { return .left }
             if a.code == 409 { return .behind }
@@ -3034,18 +3180,48 @@ enum MTCoinTx {
         }
         return .unknown
     }
+    /// THE HEAD IS BELIEVED ONLY AS MY OWN SIGNED RECORD (the chairman's finding 11.10.2026 23:2x MSK: a node that took a record of my
+    /// key signed by no one handed it out as my head, and the next honest record stood on it for ever): the head's record is read
+    /// from the same chain node, its bytes must be its name, the core must verify it, and it must be of my own key. Anything else --
+    /// no record, another key, a forgery -- and nothing is built on it: the coins stay.
+    private static func headIsMine(_ head: String, me: String, door: String) async -> Bool {
+        if head == zero { return true }
+        let g = await ask(door + "/tx-get", ["id": head])
+        guard g.code == 200, let b = (g.obj?["rec"] as? String).flatMap({ s in Data(base64Encoded: s) }) else { return false }
+        guard let r = await Task.detached(priority: .userInitiated, operation: { read(b) }).value else { return false }
+        return r.id == head && r.from == me && (r.version == 2 || r.version == 3)
+    }
     private static func pendingURL(_ id: String) -> URL? { MTTimeChainPlace.dir()?.appendingPathComponent("tx-pending-" + id + ".rec") }
     /// SENDS (version 2): the key's head from its chain node, the record on top of it, the debit held under the record's name, the
     /// record laid there. Taken -- the coins left. A head that moved (another device of the words sent meanwhile) -- the coins come
     /// back under the same number, the seed's own records join the book, the balance is asked again and one more record goes on the
     /// new head. Refused, or never reached -- the coins come back. No answer -- the record waits on disk for the node's word (settle).
     @MainActor static func send(_ coins: Int, conv: String, nonce: Data? = nil) async -> String? {
+        // VERSION 3 FIRST (COIN-TX-V3): the chain proves the balance; version 2 only for a correspondent who cannot take v3, until the cut
+        switch await send3(coins, conv: conv, nonce: nonce) {
+        case .sent(let id): return id
+        case .failed: return nil
+        case .notApplicable(let why):
+            // the reason a version 3 SEND could not go, said: 11:59:58 MSK of 12.10 laid a v2 record and nothing told why
+            MontanaP2PTrace.mark("coin_v3", "v2 road why=\(why) coins=\(coins)")
+            if v2Cut <= Int64(Date().timeIntervalSince1970) { return nil }
+        }
         guard let me = myKeyTag, let door = chainDoor(me) else { return nil }
+        // A SEND THAT NAMES NO RECEIVER SPENDS THE CHAIN TOO (COIN-TX-V3 section 3, fold-2): the chain opened and holding the sum first,
+        // else the node refuses it as an overspend -- the coins stay, said here before anything is signed
+        if let st = await reconcile(force: true), st.v3, st.proven + st.declared < Int64(coins) {
+            MontanaP2PTrace.mark("coin_v3", "v2 road refused: chain short coins=\(coins) chain=\(st.proven + st.declared)")
+            return nil
+        }
         let book = MTLocalCoinLedger.shared.whole
         for attempt in 1...2 {
             let h = await ask(door + "/tx-head", ["from": me])
             guard h.code == 200, let head = h.obj?["head"] as? String, head.count == 64 else {
                 MontanaP2PTrace.mark("coin_tx", "no head code=\(h.code) attempt=\(attempt)")
+                return nil
+            }
+            guard await headIsMine(head, me: me, door: door) else {
+                MontanaP2PTrace.mark("coin_tx", "head unverified attempt=\(attempt)")
                 return nil
             }
             guard let rec = await Task.detached(priority: .userInitiated, operation: { build(coins, conv: conv, prev: head, nonce: nonce) }).value else {
@@ -3142,14 +3318,18 @@ enum MTCoinTx {
                         got += 1
                         guard let r = await Task.detached(priority: .utility, operation: { read(b) }).value, r.id == id,
                               let c = conv[hex(r.pair)] else { bad += 1; continue }
-                        if r.version == 2, chainNode(of: r.from) != node { foreign += 1; continue }
+                        if r.version != 1, chainNode(of: r.from) != node { foreign += 1; continue }
                         seen.insert(id)
                         let book = MTLocalCoinLedger.shared.whole
                         if r.from == me {
                             if !book.holds(.send, refPrefix + r.id), book.retake(r.coins, to: c, ref: refPrefix + r.id) { own += 1 }
                             MTBusiness.shared.heardTransfer(conv: c, record: r, own: true)
                         } else {
-                            if book.receive(r.coins, from: c, ref: refPrefix + r.id, on: nil) { credited += 1 }
+                            if r.version == 3 {
+                                if await receive3(r, conv: c) { credited += 1 }
+                            } else if book.receive(r.coins, from: c, ref: refPrefix + r.id, on: nil) {
+                                credited += 1
+                            }
                             if book.holds(.receive, refPrefix + r.id) { MTBusiness.shared.heardTransfer(conv: c, record: r, own: false) }
                         }
                     }
@@ -3161,5 +3341,451 @@ enum MTCoinTx {
         }
         scannedOnce = true
         MontanaP2PTrace.mark("coin_tx_scan", "why=\(why) pipes=\(conv.count) got=\(got) credited=\(credited) own=\(own) bad=\(bad) foreign=\(foreign)")
+        await reconcile()       // the chain announced and the book's mints laid (COIN-TX-V3 sections 3-4)
+        await refundDue()       // a SEND no one took in a day comes back (section 5)
+        await MTCoinReplica.run(why: why)   // this phone's copy of the network's chains and its signed root (section 6)
+    }
+}
+
+
+// MARK: - version 3 (Audit/COIN-TX-V3.md): every move of a key's balance is a signed record of its chain
+/// THE BALANCE IS THE FOLD OF THE KEY'S CHAIN (the author's words 11.10.2026 22:5x MSK: "balances must be proven ... the Explorer
+/// shows the proof of it locally and globally"; 23:5x: "take the proven balance yourself, check it as the critic and do it
+/// yourself"). The book stays the phone's ledger; the chain is what anyone can fold: the key's first v3 record announces the book
+/// (GENESIS, declared, never called proven), what the book holds above the chain is laid as a MINT within the time of its interval,
+/// a SEND names the receiver's key under a blind only the pair opens, the receiver's RECV takes it, and an untaken SEND comes back
+/// by a REFUND after a day. The node of the key's chain folds every record and refuses an overspend; so do the replicas, the phones
+/// that keep a copy and the Explorer.
+extension MTCoinTx {
+    static let size3 = 5443
+    typealias Kind3 = MTCoinChainRules.Kind
+    private static let signed3 = Data("mt-coin-tx-v3".utf8)
+    static var v2Cut: Int64 { MTCoinChainRules.v2Cut }
+    static func fresh() -> Data {
+        var n = [UInt8](repeating: 0, count: 16)
+        _ = SecRandomCopyBytes(kSecRandomDefault, n.count, &n)
+        return Data(n)
+    }
+    /// The record of version 3, signed by the core (nil: no words, a field of the wrong size, or the core refused).
+    static func build3(_ kind: Kind3, amount: UInt64, prev: String, nonce: Data, pair: Data = Data(count: 32), to: Data = Data(count: 32),
+                       ref: String = zero, a: UInt64 = 0, b: UInt64 = 0, hands: Hands? = nil) -> Data? {
+        guard let k = hands.map({ h in (pk: h.pk, sk: h.sk) }) ?? keys(), let p = unhex(prev), p.count == 32, let r = unhex(ref), r.count == 32, nonce.count == 16,
+              pair.count == 32, to.count == 32 else { return nil }
+        var body = magic
+        body.append(3); body.append(kind.rawValue)
+        body.append(le(amount)); body.append(le(UInt64(max(0, Date().timeIntervalSince1970 * 1000))))
+        body.append(nonce); body.append(p); body.append(pair); body.append(to); body.append(r)
+        body.append(le(a)); body.append(le(b)); body.append(k.pk)
+        guard body.count == 2134, let sig = MontanaPQ.sign(seckey: k.sk, message: signed3 + body), sig.count == 3309 else { return nil }
+        return body + sig
+    }
+    /// A record of version 3 read back -- believed only when its shape holds and the core verifies its signature.
+    static func read3(_ rec: Data) -> Record? {
+        let b = [UInt8](rec)
+        guard b.count == size3, Data(b[0..<4]) == magic, b[4] == 3, let kind = Kind3(rawValue: b[5]) else { return nil }
+        let amount = u64(b, 6)
+        guard amount <= UInt64(Int.max), 0 < amount || kind == .genesis else { return nil }
+        guard MTCoinChainRules.fieldsHold(kind: kind.rawValue, amount: amount, pair: Data(b[70..<102]), to: Data(b[102..<134]), ref: Data(b[134..<166]),
+                                     a: u64(b, 166), b: u64(b, 174)) else { return nil }
+        let body = Data(b[0..<2134]), pk = Data(b[182..<2134]), sig = Data(b[2134..<size3])
+        guard MontanaPQ.verify(pubkey: pk, message: signed3 + body, signature: sig) else { return nil }
+        var r = Record(id: name(rec), version: 3, coins: Int(amount), birthMs: u64(b, 14), pair: Data(b[70..<102]),
+                       prev: hex(Data(b[38..<70])), from: keyTag(pk), bytes: rec)
+        r.kind = kind.rawValue; r.to = Data(b[102..<134]); r.ref = hex(Data(b[134..<166])); r.a = u64(b, 166); r.b = u64(b, 174)
+        r.nonce = Data(b[22..<38])
+        return r
+    }
+    /// The state of a key's chain as its node folds it (POST /tx-head), and the node's own second.
+    struct Chain3 { let head: String; let height: Int; let birth: Int64; let mintEnd: Int64; let proven: Int64; let declared: Int64; let v3: Bool; let now: Int64 }
+    static func chain3(_ me: String, door: String) async -> Chain3? {
+        let h = await ask(door + "/tx-head", ["from": me])
+        guard h.code == 200, let o = h.obj, let head = o["head"] as? String, head.count == 64 else { return nil }
+        func n(_ k: String) -> Int64 {
+            if let s = o[k] as? String { return Int64(s) ?? 0 }
+            return (o[k] as? NSNumber)?.int64Value ?? 0
+        }
+        let now = n("now")
+        return Chain3(head: head, height: Int(n("height")), birth: n("birth"), mintEnd: n("mint_end"), proven: n("proven"),
+                      declared: n("declared"), v3: n("v3") == 1, now: now == 0 ? Int64(Date().timeIntervalSince1970) : now)
+    }
+    /// One record of my key laid on my chain's head, the head read back and verified as mine first; a head that moved is asked
+    /// again once. (the node's code, its word, the record laid).
+    @MainActor static func layOnHead(hands: Hands? = nil, _ make: (Chain3) -> Data?) async -> (code: Int, word: String, rec: Data?) {
+        guard let me = hands?.from ?? myKeyTag, let door = chainDoor(me) else { return (-1, "no key", nil) }
+        for _ in 0..<2 {
+            guard let st = await chain3(me, door: door) else { return (-1, "no head", nil) }
+            guard await headIsMine(st.head, me: me, door: door) else { return (-1, "head unverified", nil) }
+            guard let rec = make(st) else { return (-1, "no record", nil) }
+            let a = await ask(door + "/tx-put", ["rec": rec.base64EncodedString()])
+            let word = (a.obj?["error"] as? String) ?? ""
+            if a.code == 200 { return (200, "", rec) }
+            if a.code == 409, word == "not on the head" { continue }
+            if a.code == -1, !a.unreached, (await ask(door + "/tx-get", ["id": name(rec)])).code == 200 { return (200, "", rec) }
+            return (a.code, word, rec)
+        }
+        return (409, "not on the head", nil)
+    }
+    @MainActor private static var mintedAt: TimeInterval = 0
+    @MainActor private static var mintDue = false
+    /// THE BOOK'S MOVE ASKS ITS CHAIN WITHIN ONE WINDOW (the author's words 12.10.2026 15:5x MSK: «the minting has its own chain of time
+    /// and as it is confirmed it releases the available»; «once in τ1»): one ask a window, however many coins the window holds.
+    @MainActor static func mintSoon() {
+        guard !mintDue else { return }
+        mintDue = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Double(MTCoinChainRules.window)) {
+            MainActor.assumeIsolated {
+                mintDue = false
+                Task { @MainActor in await reconcile() }
+            }
+        }
+    }
+    /// THE CHAIN HOLDS WHAT THE BOOK HOLDS (sections 3-4). A key's first v3 record is its GENESIS: the book as it stands, at most
+    /// what time could have minted since the coins began, announced and never called proven (before the v2 cut; a GENESIS of 0
+    /// after it). After it, what the book holds above the chain is laid as a MINT of the time since the last one, at most what the
+    /// interval allows -- once a window of τ1 (MTCoinChainRules.window), or at once when a send needs it. The node's clock decides the
+    /// interval, never the phone's.
+    @MainActor @discardableResult static func reconcile(force: Bool = false) async -> Chain3? {
+        guard let me = myKeyTag, let door = chainDoor(me) else { return nil }
+        guard var st = await chain3(me, door: door) else { return nil }
+        // what the chain's node folds is told to the wallet's split, after every word of it
+        func told(_ s: Chain3?) -> Chain3? {
+            if let s { MTCoinSplit.shared.heard(proven: s.proven, declared: s.declared, opened: s.v3, fromCopy: false, height: s.height) }
+            return s
+        }
+        let book = Int64(MTLocalCoinLedger.shared.whole.balance)
+        if !st.v3 {
+            let amount = st.now < v2Cut ? min(max(0, book), MTCoinChainRules.genesisCap) : 0
+            let r = await layOnHead { s in build3(.genesis, amount: UInt64(amount), prev: s.head, nonce: fresh()) }
+            MontanaP2PTrace.mark("coin_v3", "genesis code=\(r.code) word=\(r.word) amount=\(amount)")
+            guard r.code == 200, let again = await chain3(me, door: door) else { return nil }
+            st = again
+        }
+        let wall = Date().timeIntervalSince1970
+        guard force || Double(MTCoinChainRules.window) <= wall - mintedAt else { return told(st) }
+        mintedAt = wall
+        let gap = book - st.proven - st.declared
+        guard 0 < gap, st.mintEnd + 60 <= st.now - 120 else { return told(st) }
+        let r = await layOnHead { s in
+            let t0 = s.mintEnd, t1 = s.now - 120
+            let amount = min(book - s.proven - s.declared, MTCoinChainRules.timeA(t1 - s.birth) - MTCoinChainRules.timeA(t0 - s.birth))
+            guard 0 < amount, t0 + 60 <= t1 else { return nil }
+            return build3(.mint, amount: UInt64(amount), prev: s.head, nonce: fresh(), a: UInt64(t0), b: UInt64(t1))
+        }
+        MontanaP2PTrace.mark("coin_v3", "mint code=\(r.code) word=\(r.word) gap=\(gap)")
+        return told(r.code == 200 ? await chain3(me, door: door) : st)
+    }
+    // -- the correspondents' coin keys, my open sends: files of the TimeChain's own folder (staying on the device). No lock over the
+    // files (the layout law: a lock holds a word in memory, never a disk): the open sends are touched only on the main actor, and a
+    // correspondent's key lost to a race comes again with their next about word. --
+    private static func load(_ name: String) -> [String: Any] {
+        guard let u = MTTimeChainPlace.dir()?.appendingPathComponent(name), let d = try? Data(contentsOf: u),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return [:] }
+        return o
+    }
+    private static func save(_ name: String, _ o: [String: Any]) {
+        guard let u = MTTimeChainPlace.dir()?.appendingPathComponent(name), let d = try? JSONSerialization.data(withJSONObject: o) else { return }
+        try? d.write(to: u, options: .atomic)
+    }
+    /// A correspondent's coin key, told in their about word (k): the key a SEND of version 3 commits to.
+    static func peerFrom(_ conv: String) -> String? { (load("coin3-peers.json")["k"] as? [String: String])?[conv] }
+    static func notePeerFrom(_ conv: String, _ from: String) {
+        guard from.count == 64, from.allSatisfy({ ch in ch.isHexDigit }) else { return }
+        var o = load("coin3-peers.json")
+        var m = (o["k"] as? [String: String]) ?? [:]
+        guard m[conv] != from else { return }
+        m[conv] = from; o["k"] = m
+        save("coin3-peers.json", o)
+    }
+    /// Whether this correspondent was already told my coin key (the about word carries it until then).
+    static func toldKey(_ conv: String, _ k: String) -> Bool { (load("coin3-peers.json")["told"] as? [String: String])?[conv] == k }
+    static func noteToldKey(_ conv: String, _ k: String) {
+        var o = load("coin3-peers.json")
+        var m = (o["told"] as? [String: String]) ?? [:]
+        m[conv] = k; o["told"] = m
+        save("coin3-peers.json", o)
+    }
+    /// The coin key already derived in this process, never derived here (a main-thread caller must not pay the seed's derivation).
+    static var cachedKeyTag: String? {
+        keyLock.lock(); let c = keyCache; keyLock.unlock()   // LOCK-OK: one read of the cached key
+        return c.map { k in keyTag(k.pk) }
+    }
+    private static func openSends() -> [[String: Any]] { (load("coin3-open.json")["open"] as? [[String: Any]]) ?? [] }
+    private static func keepOpen(_ rows: [[String: Any]]) { save("coin3-open.json", ["open": rows]) }
+    enum Send3 { case sent(String), notApplicable(String), failed }
+    /// SENDS (version 3): the receiver's key known (their about word), my chain announced and holding the sum, the record names
+    /// the declared part of it (proven is spent first), commits to the receiver's key under the pair's blind, and is laid on my
+    /// chain's head. Anything that makes v3 impossible (an older correspondent, the chain not holding the sum yet) is said as
+    /// notApplicable -- the version 2 road takes it until the cut.
+    @MainActor static func send3(_ coins: Int, conv: String, nonce fixed: Data? = nil) async -> Send3 {
+        guard let me = myKeyTag, let door = chainDoor(me), let secret = MTPipeBook.secret(for: conv), !secret.isEmpty,
+              let pair = pairTag(conv) else { return .notApplicable("no pipe") }
+        guard let peer = peerFrom(conv), let peerBytes = unhex(peer), peerBytes.count == 32 else { return .notApplicable("no receiver key") }
+        guard let first = await reconcile(force: true), first.v3, Int64(coins) <= first.proven + first.declared else { return .notApplicable("chain short") }
+        let nonce = fixed ?? fresh()   // a pay of the Business brings its own (payNonce)
+        let blind = MTCoinChainRules.blind(secret: secret, nonce: nonce)
+        let commit = MTCoinChainRules.commitment(from: peerBytes, blind: blind)
+        let book = MTLocalCoinLedger.shared.whole
+        for attempt in 1...2 {
+            guard let st = await chain3(me, door: door), st.v3, Int64(coins) <= st.proven + st.declared else { return .notApplicable("chain short") }
+            guard await headIsMine(st.head, me: me, door: door) else { return .failed }
+            let dec = max(0, Int64(coins) - st.proven)
+            guard let rec = build3(.send, amount: UInt64(coins), prev: st.head, nonce: nonce, pair: pair, to: commit, a: UInt64(dec)) else { return .failed }
+            let id = name(rec)
+            guard book.send(coins, to: conv, ref: refPrefix + id) else { return .failed }
+            let pending = pendingURL(id)
+            if let pending { try? rec.write(to: pending, options: .atomic) }
+            let word = await lay(rec)
+            MontanaP2PTrace.mark("coin_v3", "send word=\(word) coins=\(coins) dec=\(dec) id=\(id.prefix(12)) attempt=\(attempt)")
+            switch word {
+            case .left:
+                if let pending { try? FileManager.default.removeItem(at: pending) }
+                keepOpen(openSends() + [["id": id, "conv": conv, "coins": coins, "at": st.now]])
+                return .sent(id)
+            case .notLeft, .behind:
+                book.receive(coins, from: conv, ref: backPrefix + id, on: nil)
+                if let pending { try? FileManager.default.removeItem(at: pending) }
+                if word == .notLeft { return .failed }
+            case .unknown:
+                keepOpen(openSends() + [["id": id, "conv": conv, "coins": coins, "at": st.now]])
+                return .failed
+            }
+        }
+        return .failed
+    }
+    /// RECEIVES (version 3): a SEND of my pair that commits to my key is taken by a RECV on my chain -- the book credits it only
+    /// when my chain holds it (200, or another device of my words took it: the SEND's node names me).
+    @MainActor static func receive3(_ s: Record, conv: String) async -> Bool {
+        guard s.kind == Kind3.send.rawValue, let me = myKeyTag, let mine = unhex(me),
+              let secret = MTPipeBook.secret(for: conv), !secret.isEmpty else { return false }
+        let blind = MTCoinChainRules.blind(secret: secret, nonce: s.nonce)
+        guard MTCoinChainRules.commitment(from: mine, blind: blind) == s.to else { return false }
+        let book = MTLocalCoinLedger.shared.whole
+        if book.holds(.receive, refPrefix + s.id) { return false }
+        guard let st = await reconcile(), st.v3 else { return false }
+        let r = await layOnHead { c in build3(.recv, amount: UInt64(s.coins), prev: c.head, nonce: fresh(), to: blind, ref: s.id, a: s.a) }
+        var taken = r.code == 200
+        if !taken, r.word == "settled" || r.word == "not yours", let door = chainDoor(s.from) {
+            let f = await ask(door + "/tx-settle", ["send": s.id])
+            taken = (f.obj?["state"] as? String) == "recv" && (f.obj?["by"] as? String) == me
+        }
+        MontanaP2PTrace.mark("coin_v3", "recv code=\(r.code) word=\(r.word) taken=\(taken ? 1 : 0) id=\(s.id.prefix(12))")
+        return taken && book.receive(s.coins, from: conv, ref: refPrefix + s.id, on: nil)
+    }
+    /// A TRANSFER TO ONE'S OWN OTHER ACCOUNT IS ONE PAIR, SENT AND RECEIVED IN THE SAME STEP (the author's words 12.10.2026 13:2x MSK:
+    /// «either the coins left or not -- there is no third -- this is point 0»; 15:3x, No.66: «a transfer to oneself in Montana must
+    /// become one pair of records, sent and received»). The phone holds both seeds -- the person seated and the person on its shelf --
+    /// so the SEND names the other key (knowOwn), and the RECV is laid at once on the other key's own chain with that key, the chain
+    /// opened first by its GENESIS of the book its shelf holds, as its own phone would open it. Only then do the coins stand in the
+    /// other person's book on the nodes, under the name their own scan credits them by: a SEND whose RECV did not stand stays the
+    /// receiver's to take when seated, or comes back to its sender by the REFUND after a day -- never both.
+    @MainActor static func knowOwn(seat: String, conv: String) async -> Hands? {
+        guard let shelf = await Task.detached(priority: .userInitiated, operation: { MTSeats.shelfCoins(seat) }).value,
+              let hands = await Task.detached(priority: .userInitiated, operation: { derive(shelf.words) }).value else {
+            MontanaP2PTrace.mark("coin_own", "seat=\(seat) no hands")
+            return nil
+        }
+        notePeerFrom(conv, hands.from)
+        return hands
+    }
+    @MainActor static func landOwn(seat: String, send id: String, coins: Int, conv: String) async {
+        guard let shelf = await Task.detached(priority: .userInitiated, operation: { MTSeats.shelfCoins(seat) }).value,
+              let hands = await Task.detached(priority: .userInitiated, operation: { derive(shelf.words) }).value,
+              let e = MontanaSeedKeys.entropyFrom(mnemonic: shelf.words), e.count == 32,
+              let me = myKeyTag, let door = chainDoor(me) else {
+            MontanaP2PTrace.mark("coin_own", "seat=\(seat) no hands -- the receiver takes it when seated")
+            return
+        }
+        var v3 = false, taken = false, said = "v2"
+        let g = await ask(door + "/tx-get", ["id": id])
+        if g.code == 200, let b = (g.obj?["rec"] as? String).flatMap({ s in Data(base64Encoded: s) }) {
+            v3 = b.count == size3
+            if v3, let s = await Task.detached(priority: .userInitiated, operation: { read3(b) }).value, s.id == id,
+               let secret = MTPipeBook.secret(for: conv), !secret.isEmpty, let theirs = unhex(hands.from), let tdoor = chainDoor(hands.from) {
+                let blind = MTCoinChainRules.blind(secret: secret, nonce: s.nonce)
+                if MTCoinChainRules.commitment(from: theirs, blind: blind) == s.to {
+                    if let st = await chain3(hands.from, door: tdoor), !st.v3 {
+                        let amount = st.now < v2Cut ? min(max(0, Int64(shelf.book)), MTCoinChainRules.genesisCap) : 0
+                        let r = await layOnHead(hands: hands) { c in build3(.genesis, amount: UInt64(amount), prev: c.head, nonce: fresh(), hands: hands) }
+                        MontanaP2PTrace.mark("coin_own", "seat=\(seat) genesis code=\(r.code) word=\(r.word) amount=\(amount)")
+                    }
+                    let r = await layOnHead(hands: hands) { c in
+                        build3(.recv, amount: UInt64(s.coins), prev: c.head, nonce: fresh(), to: blind, ref: s.id, a: s.a, hands: hands)
+                    }
+                    taken = r.code == 200
+                    said = "recv code=\(r.code) word=\(r.word)"
+                } else { said = "not their key" }
+            }
+        } else { said = "no record code=\(g.code)" }
+        guard taken || (g.code == 200 && !v3) else {
+            MontanaP2PTrace.mark("coin_own", "seat=\(seat) coins=\(coins) \(said) -- the receiver takes it when seated, or it comes back")
+            return
+        }
+        let move = MTCoinEntry(k: .receive, c: coins, ref: refPrefix + id, peer: conv, on: nil, at: Date().timeIntervalSince1970)
+        let laid = await MTCoinVault.lay([move], entropy: e)
+        MontanaP2PTrace.mark("coin_own", "seat=\(seat) coins=\(coins) \(said) book=\(laid) id=\(id.prefix(12))")
+    }
+    /// An untaken SEND comes back after a day by a REFUND on my chain (section 5): its node's clock decides, one fate a SEND.
+    @MainActor static func refundDue() async {
+        guard let me = myKeyTag, let door = chainDoor(me) else { return }
+        let rows = openSends()
+        guard !rows.isEmpty else { return }
+        var left: [[String: Any]] = []
+        let book = MTLocalCoinLedger.shared.whole
+        for o in rows {
+            guard let id = o["id"] as? String, let conv = o["conv"] as? String, let coins = o["coins"] as? Int else { continue }
+            let at = (o["at"] as? NSNumber)?.int64Value ?? 0
+            let f = await ask(door + "/tx-settle", ["send": id])
+            let state = (f.obj?["state"] as? String) ?? ""
+            if state == "recv" { continue }
+            if state == "refund" { book.receive(coins, from: conv, ref: backPrefix + id, on: nil); continue }
+            guard state == "open", let st = await chain3(me, door: door), at + 86_460 <= st.now else { left.append(o); continue }
+            let r = await layOnHead { c in build3(.refund, amount: UInt64(coins), prev: c.head, nonce: fresh(), ref: id) }
+            MontanaP2PTrace.mark("coin_v3", "refund code=\(r.code) word=\(r.word) id=\(id.prefix(12))")
+            if r.code == 200 { book.receive(coins, from: conv, ref: backPrefix + id, on: nil) } else { left.append(o) }
+        }
+        keepOpen(left)
+    }
+}
+
+
+// MARK: - the phone's copy of the network's coin chains (COIN-TX-V3 section 6)
+/// EVERY PHONE THAT KEEPS A COPY IS A NODE OF THE COIN CHAINS (the author's words 11.10.2026 22:5x MSK: "the core and the nodes are
+/// every device ... agreeing to keep a copy they keep a copy of the chain of time of the coins"; 23:3x: "check as the critic that
+/// globally on every device the node is with the new build"). With the person's consent to keep for others (MTKeeping.others) the
+/// phone pulls what each chain node took, verifies every signature with the core, folds every chain by the nodes' own rules,
+/// computes the root of the newest checkpoint itself and signs it with the seed's coin key; the nodes keep the signature and the
+/// Explorer counts it in the quorum. The whole network's chains, never only the correspondents': a holder's signature must not say
+/// whose chains it cares about. The diary says what this phone holds (coin_replica), never whose chains.
+enum MTCoinReplica {
+    struct Row: Codable { let id: String; let rec: String; let at: Int64; let node: String }
+    struct Held: Codable { var seq: [String: Int] = [:]; var rows: [Row] = [] }
+    typealias St = MTCoinChainRules.St
+    typealias SendInfo = MTCoinChainRules.SendInfo
+    @MainActor private static var running = false
+    @MainActor private static var ranAt: TimeInterval = 0
+    private static var url: URL? { MTTimeChainPlace.dir()?.appendingPathComponent("coin-replica.json") }
+    private static func load() -> Held {
+        guard let u = url, let d = try? Data(contentsOf: u), let h = try? JSONDecoder().decode(Held.self, from: d) else { return Held() }
+        return h
+    }
+    private static func save(_ h: Held) {
+        guard let u = url, let d = try? JSONEncoder().encode(h) else { return }
+        try? d.write(to: u, options: .atomic)
+    }
+    nonisolated private static func bytes(_ s: String) -> Data? { MTCoinChainRules.bytes(s) }
+    /// One record folded onto its key's state by the chain's rules (MTCoinChainRules.step, the nodes' _tx_step).
+    nonisolated static func step(_ s: St, _ p: MTCoinTx.Record, _ at: Int64, _ sends: [String: SendInfo], _ settled: Set<String>) -> (next: St?, wait: Bool) {
+        MTCoinChainRules.step(s, MTCoinChainRules.Rec(id: p.id, version: p.version, kind: p.kind, amount: Int64(p.coins), from: p.from, to: p.to, ref: p.ref,
+                                            a: p.a, b: p.b), at, sends, settled)
+    }
+    struct Folded { var keys = 0; var records = 0; var root = ""; var bad = 0; var waiting = 0; var mine: St? }
+    /// Every chain folded from its first record in its own order (prev), a RECV after the SEND it settles; then the root of the
+    /// checkpoint T exactly as the node computes it (V3 section 6): for every key in ascending from, its last record and its count at T.
+    nonisolated static func fold(_ rows: [Row], at T: Int64, me: String? = nil) -> Folded {
+        var out = Folded()
+        var byPrev: [String: [String: MTCoinTx.Record]] = [:]
+        var atOf: [String: Int64] = [:]
+        var seen = Set<String>()
+        for row in rows where !seen.contains(row.id) {
+            seen.insert(row.id)
+            guard let d = Data(base64Encoded: row.rec), let r = MTCoinTx.read(d), r.id == row.id else { out.bad += 1; continue }
+            if r.version == 1 { continue }   // a version 1 row stands on no chain
+            guard MTCoinTx.chainNode(of: r.from) == row.node else { out.bad += 1; continue }   // a node serves only its own chains
+            byPrev[r.from, default: [:]][r.prev] = r
+            atOf[r.id] = row.at
+        }
+        var st: [String: St] = [:], sends: [String: SendInfo] = [:], settled = Set<String>(), broken = Set<String>()
+        var order: [String: [String]] = [:]
+        var moved = true
+        while moved {
+            moved = false
+            for (from, chain) in byPrev where !broken.contains(from) {
+                var s = st[from] ?? St()
+                while let r = chain[s.head] {
+                    let at = atOf[r.id] ?? 0
+                    let next = step(s, r, at, sends, settled)
+                    if next.wait { break }
+                    guard let n = next.next else { broken.insert(from); out.bad += 1; break }
+                    if r.version == 3, r.kind == MTCoinTx.Kind3.send.rawValue {
+                        sends[r.id] = SendInfo(from: from, amount: Int64(r.coins), at: at, to: r.to, dec: Int64(r.a))
+                    }
+                    if r.version == 3, r.kind == MTCoinTx.Kind3.recv.rawValue || r.kind == MTCoinTx.Kind3.refund.rawValue { settled.insert(r.ref) }
+                    order[from, default: []].append(r.id)
+                    s = n; moved = true
+                }
+                st[from] = s
+            }
+        }
+        for (from, chain) in byPrev where !broken.contains(from) { if chain[st[from]?.head ?? MTCoinChainRules.zero] != nil { out.waiting += 1 } }
+        if let me, !broken.contains(me) { out.mine = st[me] }
+        var h = SHA256()
+        h.update(data: Data("mt-coin-root-v1".utf8))
+        for from in order.keys.sorted() {
+            let ids = (order[from] ?? []).filter { id in (atOf[id] ?? Int64.max) <= T }
+            guard let last = ids.last, let f = bytes(from), let l = bytes(last) else { continue }
+            var c = UInt64(ids.count).littleEndian
+            h.update(data: f); h.update(data: l); h.update(data: withUnsafeBytes(of: &c) { p in Data(p) })
+            out.keys += 1; out.records += ids.count
+        }
+        out.root = MTCoinTx.hex(Data(h.finalize()))
+        return out
+    }
+    /// One round: what each chain node took since the last round, the whole fold, the root of the nodes' newest checkpoint computed
+    /// here and signed with the seed's coin key at both nodes. Once in ten minutes at most, only with the consent to keep for others.
+    @MainActor static func run(why: String) async {
+        guard MTKeeping.others, !running, 600 <= Date().timeIntervalSince1970 - ranAt, let k = MTCoinTx.keys() else { return }
+        running = true
+        ranAt = Date().timeIntervalSince1970
+        defer { running = false }
+        var held = load()
+        var pulled = 0
+        for n in MTCoinTx.chainNodes {
+            let door = "https://" + n.host + "/pushwake"
+            var since = held.seq[n.name] ?? 0
+            for _ in 0..<64 {
+                let a = await MTCoinTx.post(door + "/tx-since", ["since": since])
+                guard a.code == 200, let txs = a.obj?["txs"] as? [[String: Any]] else { break }
+                for x in txs {
+                    guard let id = x["id"] as? String, let rec = x["rec"] as? String, let seq = (x["seq"] as? NSNumber)?.intValue else { continue }
+                    held.rows.append(Row(id: id, rec: rec, at: (x["at"] as? NSNumber)?.int64Value ?? 0, node: n.name))
+                    since = max(since, seq); pulled += 1
+                }
+                held.seq[n.name] = since
+                if txs.count < 512 { break }
+            }
+        }
+        save(held)
+        let me = MTCoinTx.keyTag(k.pk)
+        guard let door = MTCoinTx.chainDoor(me) else { return }
+        let r = await MTCoinTx.post(door + "/tx-root", [:])
+        guard r.code == 200, let T = (r.obj?["at"] as? NSNumber)?.int64Value, let nodeRoot = r.obj?["root"] as? String else {
+            MontanaP2PTrace.mark("coin_replica", "why=\(why) pulled=\(pulled) rows=\(held.rows.count) no checkpoint code=\(r.code)")
+            return
+        }
+        let rows = held.rows
+        let f = await Task.detached(priority: .utility) { fold(rows, at: T, me: me) }.value
+        // the person's own chain as this copy folded it: the wallet's split hears it before the node's word (MTCoinSplit)
+        if f.bad == 0, let mine = f.mine { MTCoinSplit.shared.heard(proven: mine.proven, declared: mine.declared, opened: mine.v3, fromCopy: true, height: mine.height) }
+        var signed = 0
+        if f.bad == 0, 0 < f.keys, let root = bytes(f.root) {
+            var t = UInt64(T).littleEndian
+            let msg = Data("mt-coin-root-sig-v1".utf8) + withUnsafeBytes(of: &t) { p in Data(p) } + root
+            if let sig = MontanaPQ.sign(seckey: k.sk, message: msg) {
+                for n in MTCoinTx.chainNodes {
+                    let a = await MTCoinTx.post("https://" + n.host + "/pushwake/tx-root-sign",
+                                                ["pk": k.pk.base64EncodedString(), "at": T, "root": f.root, "sig": sig.base64EncodedString()])
+                    if a.code == 200 { signed += 1 }
+                }
+            }
+        }
+        MontanaP2PTrace.mark("coin_replica", "why=\(why) keys=\(f.keys) records=\(f.records) pulled=\(pulled) bad=\(f.bad) waiting=\(f.waiting) T=\(T) root=\(f.root.prefix(12)) same=\(f.root == nodeRoot ? 1 : 0) signed=\(signed)")
+    }
+}
+
+extension MTCoinTx {
+    /// A node's answer for a reader outside this type (the phone's copy of the chains): the code and the body.
+    static func post(_ url: String, _ body: [String: Any]) async -> (code: Int, obj: [String: Any]?) {
+        let a = await ask(url, body)
+        return (a.code, a.obj)
     }
 }

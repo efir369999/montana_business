@@ -194,9 +194,10 @@ enum MontanaNotify {
         content.categoryIdentifier = "MESSAGE"          // inline "Reply" action
         content.title = displayName(for: from, fallback: content.title)
         content.body = bodyText
-        content.threadIdentifier = chat                 // grouping + targeted dismissal by the app
-        content.userInfo["chat"] = chat                 // willPresent reads this to honour the open chat
-        content.userInfo["from"] = from
+        // THE SYSTEM HEARS THE CONVERSATION'S ALIAS (MTNoticeAlias, 12.10.2026): the thread, the tap and the sender read back here alone.
+        content.threadIdentifier = MTNoticeAlias.of(chat)   // grouping + targeted dismissal by the app
+        content.userInfo["chat"] = MTNoticeAlias.of(chat)   // willPresent reads it back (MTNoticeAlias.open) to honour the open chat
+        content.userInfo["from"] = MTNoticeAlias.of(from)
 
         if countUnread, !MTQuietChats.holds(chat) {
             var counts = MontanaKeychain.get("unreadCounts").flatMap { try? JSONDecoder().decode([String: Int].self, from: $0) } ?? [:]
@@ -216,20 +217,21 @@ enum MontanaNotify {
         let display = content.title.isEmpty ? from : content.title
         let image = avatarData(for: from, display: display).map { INImage(imageData: $0) }
         var nameComp = PersonNameComponents(); nameComp.nickname = display
-        let handle = INPersonHandle(value: from, type: from.contains("@") ? .emailAddress : .unknown)
+        let sys = MTNoticeAlias.of(from)   // the person, the conversation and the donation's group under this phone's alias
+        let handle = INPersonHandle(value: sys, type: .unknown)
         let sender = INPerson(personHandle: handle, nameComponents: nameComp, displayName: display,
-                              image: image, contactIdentifier: nil, customIdentifier: from,
+                              image: image, contactIdentifier: nil, customIdentifier: sys,
                               isMe: false, suggestionType: .none)
         let me = INPerson(personHandle: INPersonHandle(value: "0", type: .unknown), nameComponents: nil,
                           displayName: nil, image: nil, contactIdentifier: nil, customIdentifier: nil,
                           isMe: true, suggestionType: .none)
         let intent = INSendMessageIntent(recipients: [me], outgoingMessageType: .outgoingMessageText,
                                          content: content.body, speakableGroupName: group ? INSpeakableString(spokenPhrase: display) : nil,
-                                         conversationIdentifier: from, serviceName: nil, sender: sender, attachments: nil)
+                                         conversationIdentifier: sys, serviceName: nil, sender: sender, attachments: nil)
         if let img = image { intent.setImage(img, forParameterNamed: \.sender) }
         let interaction = INInteraction(intent: intent, response: nil)
         interaction.direction = .incoming
-        interaction.groupIdentifier = from   // a deleted chat takes this donation with it (forgetSuggestions)
+        interaction.groupIdentifier = sys   // a deleted chat takes this donation with it (forgetSuggestions)
         interaction.donate { _ in }
         return (try? content.updating(from: intent))
     }
@@ -254,15 +256,16 @@ enum MontanaNotify {
         guard due else { return }
         let display = displayName(for: ref)
         let image = avatarData(for: ref, display: display).map { INImage(imageData: $0) }
-        let person = INPerson(personHandle: INPersonHandle(value: ref, type: .unknown), nameComponents: nil,
-                              displayName: display, image: image, contactIdentifier: nil, customIdentifier: ref)
+        let sys = MTNoticeAlias.of(ref)   // the system offers the chat under this phone's alias (the share sheet reads it back)
+        let person = INPerson(personHandle: INPersonHandle(value: sys, type: .unknown), nameComponents: nil,
+                              displayName: display, image: image, contactIdentifier: nil, customIdentifier: sys)
         let intent = INSendMessageIntent(recipients: [person], outgoingMessageType: .outgoingMessageText, content: nil,
                                          speakableGroupName: INSpeakableString(spokenPhrase: display),
-                                         conversationIdentifier: ref, serviceName: nil, sender: nil, attachments: nil)
+                                         conversationIdentifier: sys, serviceName: nil, sender: nil, attachments: nil)
         if let image { intent.setImage(image, forParameterNamed: \.speakableGroupName) }
         let interaction = INInteraction(intent: intent, response: nil)
         interaction.direction = .outgoing
-        interaction.groupIdentifier = ref
+        interaction.groupIdentifier = sys
         interaction.donate { error in
             MontanaP2PTrace.mark("share_suggest", error == nil ? "given to=\(String(ref.prefix(10)))" : "refused code=\((error as NSError?)?.code ?? 0)")
         }
@@ -283,7 +286,7 @@ enum MontanaNotify {
     /// A deleted chat leaves the system's suggestions and its notification donations.
     static func forgetSuggestions(_ ref: String) {
         guard !ref.isEmpty else { return }
-        INInteraction.delete(with: ref) { _ in }
+        INInteraction.delete(with: [ref] + MTNoticeAlias.forget(ref)) { _ in }   // the builds before donated under the link itself
         let notices = MontanaMissedCall.tokens(of: ref)   // a call's notices were donated under their tokens (MontanaMissedCall.noticeToken)
         if !notices.isEmpty { INInteraction.delete(with: notices) { _ in } }
         suggestLock.withLock { suggestedDay[ref] = nil }
@@ -291,6 +294,7 @@ enum MontanaNotify {
     /// The person left the device: every donation of theirs goes.
     static func forgetAllSuggestions() {
         INInteraction.deleteAll { _ in }
+        MTNoticeAlias.forgetAll()
         suggestLock.withLock { suggestedDay.removeAll() }
     }
 
@@ -343,7 +347,7 @@ enum MontanaNotify {
         let final = withCommunication(content, from: from) ?? content
         MontanaP2PTrace.mark("notify", mid: nil, "kind=typing from=\(String(from.prefix(10)))")
         UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: "typing-\(chat)", content: final, trigger: nil)) { err in
+            UNNotificationRequest(identifier: "typing-" + MTNoticeAlias.of(chat), content: final, trigger: nil)) { err in
             if let err { MontanaP2PTrace.mark("notify_failed", mid: nil, "err=\(err.localizedDescription)") }
         }
     }
@@ -364,7 +368,7 @@ enum MontanaNotify {
         let final = withCommunication(content, from: from) ?? content
         MontanaP2PTrace.mark("notify", mid: nil, "kind=pin from=\(String(from.prefix(10)))")
         UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: "pin-\(chat)-\(sid)", content: final, trigger: nil)) { err in
+            UNNotificationRequest(identifier: "pin-" + MTNoticeAlias.of(chat) + "-" + sid, content: final, trigger: nil)) { err in
             if let err { MontanaP2PTrace.mark("notify_failed", mid: nil, "err=\(err.localizedDescription)") }
         }
     }
@@ -418,7 +422,7 @@ enum MontanaNotify {
         center.getDeliveredNotifications { list in
             let ids = list.filter { n in
                 let c = n.request.content
-                if !conv.isEmpty, MontanaMissedCall.chat(of: c.userInfo) == conv || c.threadIdentifier == conv { return true }
+                if !conv.isEmpty, MontanaMissedCall.chat(of: c.userInfo) == conv || MTNoticeAlias.open(c.threadIdentifier) == conv { return true }
                 guard !names.isEmpty else { return false }
                 if let m = c.userInfo["mid"] as? String, names.contains(m.hasPrefix("mid:") ? String(m.dropFirst(4)) : m) { return true }
                 let id = n.request.identifier
@@ -435,7 +439,7 @@ enum MontanaNotify {
     /// A letter arrived — the typing announcement has done its work and the next one is due again.
     static func typingEnded(_ chat: String) {
         typingLock.lock(); typingShownAt[chat] = nil; typingLock.unlock()
-        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["typing-\(chat)"])
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["typing-\(chat)", "typing-" + MTNoticeAlias.of(chat)])
     }
 
     static func present(from: String, chat: String, text: String, mid: String) {

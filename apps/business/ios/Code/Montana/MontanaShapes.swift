@@ -1111,24 +1111,69 @@ struct MontanaCallMark: View {
     var action: () -> Void
     static let sidePad: CGFloat = 8
     static let topPad: CGFloat = 8
+    @State private var pressed = false
     var body: some View {
-        Button(action: action) {
-            // THE WHOLE 44-POINT SQUARE IS THE MARK'S (12.10.2026, the author's word 12:3x MSK: «the fold by the arrow does not press
-            // for everyone»): the touch shape was the circle inscribed in the target, and a finger at its corners -- a fifth of the
-            // square -- fell through to the picture's switch under it and toggled the buttons instead.
-            let face = MontanaBarGlyph(glyph: glyph)
-                .font(.system(size: 20, weight: .semibold)).foregroundColor(MontanaOctagon.barGlyph)
-                .frame(width: montanaTouchTarget, height: montanaTouchTarget)
-                .contentShape(Rectangle())
-            if #available(iOS 26.0, *) {
-                face.glassEffect(.regular.interactive(), in: Circle())
-            } else {
-                face.background(MontanaOctagon.barMaterial, in: Circle())
-                    .overlay(Circle().stroke(Color.white.opacity(0.28), lineWidth: 1))
+        // THE MARK'S FINGER IS THE PLATFORM'S (the author's words 12.10.2026 15:4x-15:5x MSK: «on the iPhone 17 the talk does not fold by
+        // the arrow -- at the root, at one touch»; «everything native, and the same for everyone»). The iPhone 17 Pro Max on iOS 26.6.2
+        // under Display Zoom (its call screen 375x812, T1's 428x926): nine calls of 11-12.10 and not one fold by the arrow, T1 eight of
+        // nineteen. The drawn Button shared its finger with the platform's interactive glass laid over it and with the picture's
+        // switch beside it, and which of them took a touch differed by system and zoom. A clear control of the system over the mark's
+        // whole 44 points takes it now: the system gives a touch to the deepest view that takes it, and a control fires at the lifting
+        // inside, the first time, on every system. The face is drawn under it and answers no finger.
+        let face = MontanaBarGlyph(glyph: glyph)
+            .font(.system(size: 20, weight: .semibold)).foregroundColor(MontanaOctagon.barGlyph)
+            .frame(width: montanaTouchTarget, height: montanaTouchTarget)
+        ZStack {
+            Group {
+                if #available(iOS 26.0, *) {
+                    face.glassEffect(.regular, in: Circle())
+                } else {
+                    face.background(MontanaOctagon.barMaterial, in: Circle())
+                        .overlay(Circle().stroke(Color.white.opacity(0.28), lineWidth: 1))
+                }
             }
+            .opacity(pressed ? 0.55 : 1)
+            .allowsHitTesting(false)
+            MTMarkTouch(name: glyph, pressed: $pressed, action: action)
+                .frame(width: montanaTouchTarget, height: montanaTouchTarget)
         }
-        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(label))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { action() }
+    }
+}
+/// A MARK'S FINGER (MontanaCallMark): a clear control of the system over the mark's room. It fires at the lifting inside, says its
+/// touch and its firing to the diary -- whether a finger reached the mark is seen, never guessed (12.10.2026, No.66) -- and reports
+/// its press for the face's dimming.
+struct MTMarkTouch: UIViewRepresentable {
+    let name: String
+    @Binding var pressed: Bool
+    let action: () -> Void
+    final class Control: UIControl {
+        var onPress: ((Bool) -> Void)?
+        override var isHighlighted: Bool { didSet { if isHighlighted != oldValue { onPress?(isHighlighted) } } }
+    }
+    final class Coordinator: NSObject {
+        var name = ""
+        var action: () -> Void = {}
+        @objc func down() { MontanaP2PTrace.mark("mark_touch", "down glyph=\(name)") }
+        @objc func fire() { MontanaP2PTrace.mark("mark_touch", "fire glyph=\(name)"); action() }
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeUIView(context: Context) -> Control {
+        let c = Control()
+        c.backgroundColor = .clear
+        c.isAccessibilityElement = false   // the mark's own element speaks for it (MontanaCallMark)
+        c.addTarget(context.coordinator, action: #selector(Coordinator.down), for: .touchDown)
+        c.addTarget(context.coordinator, action: #selector(Coordinator.fire), for: .touchUpInside)
+        return c
+    }
+    func updateUIView(_ c: Control, context: Context) {
+        context.coordinator.name = name
+        context.coordinator.action = action
+        let pressed = $pressed
+        c.onPress = { p in pressed.wrappedValue = p }
     }
 }
 /// THE ONE SHARE BUTTON OF THE APP (the author's word 25.09: «make this button the system's native share, one owner in the

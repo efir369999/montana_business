@@ -13,6 +13,7 @@ struct MTWalletPage: View {
     @ObservedObject private var autoMint = MTWalletPull.shared
     @ObservedObject private var vault = MTCoinVault.shared
     @ObservedObject private var tipNet = MTTimeChainTip.shared
+    @ObservedObject private var coinSplit = MTCoinSplit.shared   // the balance as its chain holds it, proven and declared
     @AppStorage(MTCoinShow.key) private var coinsShown = false   // the owner's switch (Privacy), read here for the table's line
     @AppStorage(MTPersonalRate.key) private var personalRate = ""   // the person's own rate of the coin, for the balance in their currency
     @State private var sending = false
@@ -165,6 +166,23 @@ struct MTWalletPage: View {
                         }
                         // USER-DATA: the same balance in Montana (one coin is 0.000000001)
                         Text(verbatim: MTChatMint.montana(book.balance) + " Ɱ").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                        // THE TOTAL IS THE BOOK'S, THE AVAILABLE THE NETWORK'S (the author's words 12.10.2026 15:5x MSK: «the total balance must
+                        // always grow with the minting and show everything, and the available depends on the network and the confirmed --
+                        // everything at once»): under the figure, the part the person's chain on the network confirms (MTCoinSplit), its split,
+                        // and what still waits for its window of τ1.
+                        if let split = coinSplit.split {
+                            let available = Int(clamping: split.proven + split.declared)
+                            // USER-DATA: the coins the person's chain on the network confirms, the spendable part of the total
+                            Text("Available \(MTCoinText.count(available))").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary)
+                            // USER-DATA: two counts of coins, each beside its word
+                            Text("Proven \(MTCoinText.count(Int(clamping: split.proven))) · Declared \(MTCoinText.count(Int(clamping: split.declared)))")
+                                .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                            let waiting = book.balance - available
+                            if 0 < waiting {
+                                // USER-DATA: the coins the book holds above the chain, minted onto it as the key's time allows (COIN-TX-V3 section 4)
+                                Text("\(MTCoinText.count(waiting)) more wait to be minted in time").font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                            }
+                        }
                         // THE BALANCE IN THE PERSON'S CURRENCY (the author's word 05.10.2026 00:25 MSK: «under the line of the coins in
                         // Montana, above the level of π, the wallet's balance in the chosen currency at the person's rate»): the balance
                         // times one coin's worth by their own earning (MTPersonalRate), once that earning is told.
@@ -1581,10 +1599,10 @@ struct MTCoinSendSheet: View {
                 guard let conv else { going[key] = nil; continue }
                 store.setPeerName(ref: conv, name: s.name, at: Date().timeIntervalSince1970, source: "seat")
                 let chat = store.listChats().first { c in (c.convId ?? c.name) == conv } ?? Chat(name: conv, lastMessage: "", time: "", unread: 0, convId: conv)
+                // ONE PAIR, SENT AND RECEIVED (point 0, No.66): the SEND names my other key, and its RECV is laid at once by this phone
+                _ = await MTCoinTx.knowOwn(seat: s.id, conv: conv)
                 if let tx = await MTCoinSend.transferId(sum, to: chat, store: store) {
-                    // the record left: the receiving person takes it in the same step, never by a letter on its way (point 0)
-                    let seat = s.id
-                    _ = await Task.detached(priority: .userInitiated) { await MTSeats.landTransfer(seat, coins: sum, record: tx, conv: conv) }.value
+                    await MTCoinTx.landOwn(seat: s.id, send: tx, coins: sum, conv: conv)
                     went.append(chat); going[key] = true
                 } else { going[key] = nil }
             }

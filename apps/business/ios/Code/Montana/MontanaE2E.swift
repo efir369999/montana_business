@@ -1541,9 +1541,13 @@ final class E2E {
         let phone = MTPeerAbout.myPhone
         let phoneKey = "aboutPhone." + peer
         let phoneDue = !phone.isEmpty && UserDefaults.standard.string(forKey: phoneKey) != phone
-        if held == tag, !coinsDue, !phoneDue { return }                          // RECEIPTED with these words and this balance
-        if held == nil, tag == "0", !force, !coinsDue, !phoneDue { return }      // nothing was ever said, and nothing is said now
-        if MontanaDeliveryEngine.shared.pendingStateTag(kind: .about, to: peer) == tag, !coinsDue, !phoneDue { return }   // on their way
+        // MY COIN KEY RIDES THE SAME WORD (COIN-TX-V3 section 1): a SEND of version 3 commits to the receiver's key, so a correspondent
+        // learns mine once -- a coin key's tag, never a name -- and only from the key this process already derived.
+        let coinKey = MTCoinTx.cachedKeyTag
+        let keyDue = coinKey.map { k in !MTCoinTx.toldKey(peer, k) } ?? false
+        if held == tag, !coinsDue, !phoneDue, !keyDue { return }                          // RECEIPTED with these words and this balance
+        if held == nil, tag == "0", !force, !coinsDue, !phoneDue, !keyDue { return }      // nothing was ever said, and nothing is said now
+        if MontanaDeliveryEngine.shared.pendingStateTag(kind: .about, to: peer) == tag, !coinsDue, !phoneDue, !keyDue { return }   // on their way
         var word: [String: Any] = ["b": bio, "l": link, "at": now]
         if !phone.isEmpty {
             word["p"] = phone
@@ -1552,6 +1556,7 @@ final class E2E {
             if let a = MTBizPhone.attestation() { word["pa"] = a.montanaHexString }
         }
         if let coins { word["c"] = coins }
+        if let coinKey { word["k"] = coinKey }
         if let own = MTOwnWords.tag(for: peer) { word["o"] = own }   // a tag only my words make: a pair of my words knows itself (06.10)
         guard let d = try? JSONSerialization.data(withJSONObject: word),
               let body = String(data: d, encoding: .utf8) else { return }
@@ -1560,6 +1565,7 @@ final class E2E {
                                              text: aboutMark + body, silent: true, kind: .about)
         if let coins { UserDefaults.standard.set(["c": coins, "at": now] as [String: Any], forKey: coinsKey) }
         if !phone.isEmpty { UserDefaults.standard.set(phone, forKey: phoneKey) }
+        if let coinKey { MTCoinTx.noteToldKey(peer, coinKey) }
         MontanaP2PTrace.mark("about_tx", "to=\(String(peer.prefix(10))) bio=\(bio.isEmpty ? 0 : 1) link=\(link.isEmpty ? 0 : 1) tag=\(tag)")
     }
     /// The balance told now, past the word's ten minutes (MTWalletPull): the pace's mark is let go and the word goes.

@@ -27,7 +27,8 @@ final class ShareViewController: UIViewController {
         picker.chats = ShareChat.mirror()
         // THE SYSTEM'S SUGGESTION IS A FACT FOR THE DIARY, NEVER A CHOICE: whether the system handed one, and whether the list
         // knows its chat -- the next "it went to someone" is read from these lines.
-        if let c = (extensionContext?.intent as? INSendMessageIntent)?.conversationIdentifier, !c.isEmpty {
+        if let named = (extensionContext?.intent as? INSendMessageIntent)?.conversationIdentifier, !named.isEmpty {
+            let c = MTNoticeAlias.open(named)   // the system offered the chat under this phone's alias (MontanaNotify.suggest)
             let known = picker.chats.contains { $0.name == c } ? 1 : 0
             ShareSend.diag("sheet intent chat=\(String(c.prefix(10))) known=\(known) -- the finger picks")
         } else {

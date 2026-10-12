@@ -37226,6 +37226,70 @@
           }
         }
       }
+    },
+    "Available %@": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Доступно %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可用 %@"
+          }
+        }
+      }
+    },
+    "Proven %@ · Declared %@": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Доказано %1$@ · Объявлено %2$@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已证明 %1$@ · 已声明 %2$@"
+          }
+        }
+      }
+    },
+    "%@ more wait to be minted in time": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ещё %@ ждут чеканки по времени"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "还有 %@ 等待按时间铸造"
+          }
+        }
+      }
+    },
+    "This account holds %@ coins. They stay with its 24 words and come back only with them.": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "На этом аккаунте %@ монет. Они остаются за его 24 словами и вернутся только с ними."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此账户持有 %@ 枚硬币。它们留在其 24 个助记词中，只有凭这些助记词才能取回。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

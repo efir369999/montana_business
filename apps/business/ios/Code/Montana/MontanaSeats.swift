@@ -423,18 +423,16 @@ final class MTSeats: ObservableObject {
         MontanaP2PTrace.mark("seat_pair", "refused seat=" + id + " -- no card of theirs opens")
         return nil
     }
-    /// A TRANSFER TO ONE'S OWN OTHER ACCOUNT LANDS IN THE SAME STEP (No.65, point 0; the author's words 12.10.2026 13:2x MSK: «either
-    /// the coins left or not, there is no third»): T1's 4 105 470 coins of 11.10 rode a letter to a person on the shelf, who was
-    /// seated, never took it and was forgotten -- the coins stood on the way. The record that left the seated book is laid at once as
-    /// the receiving person's own move in their book on the nodes, by their own words (MTCoinVault.lay, the shelf's road), under the
-    /// very name their scan credits it by (tx: and the record's id): it stands in their book whether or not they are seated again,
-    /// on any device of their words, and their scan finds it already taken. Called off the main thread.
-    static func landTransfer(_ id: String, coins: Int, record tx: String, conv: String) async -> Int {
-        guard let rec = record(id), !rec.words.isEmpty, let e = MontanaSeedKeys.entropyFrom(mnemonic: rec.words), e.count == 32 else { return 0 }
-        let move = MTCoinEntry(k: .receive, c: coins, ref: MTCoinTx.refPrefix + tx, peer: conv, on: nil, at: Date().timeIntervalSince1970)
-        let laid = await MTCoinVault.lay([move], entropy: e)
-        MontanaP2PTrace.mark("seat_coin", "seat=" + id + " coins=" + String(coins) + " rows=" + String(laid))
-        return laid
+    /// A PERSON ON THE SHELF'S OWN WORDS AND THE BALANCE OF THEIR BOOK AS THE SHELF HOLDS IT -- the phone's hands for the other end of a
+    /// transfer to one's own account (MTCoinTx.landOwn, No.66): the RECV is laid on their own chain with their own key before their
+    /// book is credited, so the SEND has one fate. (The book-only landing of No.65 left the SEND open beside the credit, and its REFUND
+    /// would have brought the same coins back to the sender a day later.) nil for the person seated, an unknown seat or a record that
+    /// does not open. Read off the screen's thread.
+    static func shelfCoins(_ id: String) -> (words: String, book: Int)? {
+        let b = book()
+        guard id != b.active, let rec = record(id), !rec.words.isEmpty else { return nil }
+        let file = shelf(folder: "AS:Montana/Coins", seat: id).appendingPathComponent(MTCoinPlace.book)
+        return (rec.words, MTLocalCoinLedger.balance(of: file))
     }
     /// THE PERSON SEATED TAKES WHAT THE SHELF RECEIVED FOR THEM: the rows go into their inbox as a pickup's rows (the landing
     /// door opens them), and only then leave the shelf's file. Asked at the lift and at every pickup of the person seated.

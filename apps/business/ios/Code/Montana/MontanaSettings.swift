@@ -1886,7 +1886,16 @@ struct PrivacyView: View {
             Button("Delete account", role: .destructive) { forgetSeed() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Your account is deleted: this device erases your 24-word identity, and your public name and your confirmed number leave Montana's nodes and services. Your history stays here sealed and opens again only from the same 24 words — on this device, or on another one that already holds a copy. Nobody keeps the words for you: write them down first: Settings → Privacy → Seed phrase. Deleting the app erases the history as well.")
+            let rest = Text("Your account is deleted: this device erases your 24-word identity, and your public name and your confirmed number leave Montana's nodes and services. Your history stays here sealed and opens again only from the same 24 words — on this device, or on another one that already holds a copy. Nobody keeps the words for you: write them down first: Settings → Privacy → Seed phrase. Deleting the app erases the history as well.")
+            // THE COINS ARE SAID BEFORE THE WORDS GO (No.66, after 4 105 470 coins stood on a forgotten account on 11.10): an account
+            // that holds coins says how many, and that only its 24 words bring them back.
+            let coins = MTLocalCoinLedger.shared.balance
+            if 0 < coins {
+                // USER-DATA: two line breaks between the coins' line and the rest
+                Text("This account holds \(MTCoinText.count(coins)) coins. They stay with its 24 words and come back only with them.") + Text(verbatim: "\n\n") + rest
+            } else {
+                rest
+            }
         }
         .sheet(isPresented: $showSeed) {
             NavigationStack { SeedShowView() }.preferredColorScheme(.dark).montanaMotionMeter()

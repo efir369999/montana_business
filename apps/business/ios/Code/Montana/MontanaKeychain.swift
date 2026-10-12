@@ -270,3 +270,58 @@ enum MontanaHandoff {
         return (try? sealed.write(to: u, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])) != nil
     }
 }
+
+/// THE SYSTEM HEARS A CONVERSATION'S ALIAS, NEVER ITS LINK (12.10.2026, No.66; No.65's open item 3 under the rule of absolute
+/// privacy): a letter's notice and the share sheet's suggestion handed the system the conversation link -- as the thread, the user
+/// info, the person's handle, the conversation and the donation's group. The system keeps delivered notices and donations outside our
+/// seal, in its backup and on the account's other devices, and the link is the same on both phones of a pair: every letter stood in one
+/// trail of who-with-whom-when. Each conversation now wears one alias on this device -- sixteen random bytes, made of nothing,
+/// different on the other phone of the pair -- mapped back here alone, in the shared keychain the app, the notification extension and
+/// the share sheet all read. One alias a conversation keeps its notices one thread; a call's notice keeps its own one-time token
+/// (MontanaMissedCall.noticeToken).
+enum MTNoticeAlias {
+    private static let key = "noticeAliases"
+    private static let q = DispatchQueue(label: "montana.notice.alias")
+    static let head = "n:"   // NOT-UI: an alias's mark: a value of the builds before (the link itself) is told from it
+    // BOUND-OK: one row a conversation that rang or was offered; a conversation erased takes its row (forget).
+    private static func rows() -> [String: String] {
+        guard let d = MontanaKeychain.get(key), let m = try? JSONDecoder().decode([String: String].self, from: d) else { return [:] }
+        return m
+    }
+    /// The alias a conversation wears on this device, born once, of nothing.
+    static func of(_ conv: String) -> String {
+        guard !conv.isEmpty else { return conv }
+        // MAIN-SAFE-SYNC: a private queue that never waits on main or on any lock; one small keychain record, read and written in order.
+        return q.sync {
+            var m = rows()
+            if let a = m.first(where: { r in r.value == conv })?.key { return a }
+            let a = head + (0..<16).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+            m[a] = conv
+            if let d = try? JSONEncoder().encode(m) { MontanaKeychain.set(key, d) }
+            return a
+        }
+    }
+    /// A value the system handed back: an alias read to its conversation; any other value (a link of the builds before) as it is.
+    static func open(_ value: String) -> String {
+        guard value.hasPrefix(head) else { return value }
+        // MAIN-SAFE-SYNC: the same private queue, one keychain read.
+        return q.sync { rows()[value] } ?? value
+    }
+    /// A conversation erased: its alias leaves the map and is said, so its donations go with it.
+    @discardableResult static func forget(_ conv: String) -> [String] {
+        // MAIN-SAFE-SYNC: the same private queue, one keychain read and write.
+        q.sync {
+            var m = rows()
+            let gone = m.filter { r in r.value == conv }.map { r in r.key }
+            guard !gone.isEmpty else { return [] }
+            for a in gone { m[a] = nil }
+            if let d = try? JSONEncoder().encode(m) { MontanaKeychain.set(key, d) }
+            return gone
+        }
+    }
+    /// The person left the device: no alias of theirs stays.
+    static func forgetAll() {
+        // MAIN-SAFE-SYNC: the same private queue, one keychain write.
+        _ = q.sync { MontanaKeychain.set(key, Data()) }
+    }
+}

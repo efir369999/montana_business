@@ -4214,6 +4214,7 @@ MontanaLocalVault.setEncrypted("scheduledMsgs", d)
                     MTPeerAbout.note(chat, bio: (o["b"] as? String) ?? "", link: (o["l"] as? String) ?? "", at: at,
                                      phone: MTPeerAbout.confirmedNumber(o))   // their number, only as the service confirmed it (stage N)
                     if let coins = o["c"] as? Int { MTCoinBoard.shared.note(chat, coins: coins, at: at) }   // the pair's balance (03.10)
+                    if let k = o["k"] as? String { MTCoinTx.notePeerFrom(chat, k) }   // the pair's coin key: v3 sends commit to it (COIN-TX-V3)
                     if let own = o["o"] as? String { MTOwnWords.heard(own, from: chat) }   // the pair holds my words: no coin goes to it (06.10)
                 }
                 E2E.noteAboutCapable(chat)   // a build that speaks the word reads it
@@ -6380,6 +6381,7 @@ enum SeedScope {
         "wakeVoipDigest", "wakeVoipToken", "diagId", "diagSalt", "nseDiag", "nseLog", "shareDiag",
         "nseInbox", "nseKnocked", "nseShownMids", "nseQuietIds", "nseRoomRang", "heldMids", "pendingShare", "pendingWall", "missedCallSeeds",
         "callNoticeTokens", "mt.longblob.wait", "musicFolders",   // callNoticeTokens: the one-time names a call's notices wear for the system (MontanaMissedCall.noticeToken)
+        "noticeAliases",   // the alias each conversation wears for the system on this phone (MTNoticeAlias, 12.10): this device's names, never a copy
         "AppLanguage", "screen.key", "screen.diary",   // the screen broadcast's call key and its diary box: this device's, for one call
         "mt.seats",   // the book of the persons seated on this phone (MTSeats): a copy carries the person seated, never the shelf (29.09)
         "nseShelf"]   // the keys the extension opens the shelf's letters with (MTShelfPost, 07.10): this device's view of its shelf, never a copy
@@ -6495,7 +6497,7 @@ enum SeedScope {
         "namesCold", "photosCold", "photosManualCold", "orderCold", "readChatsCold", "pinnedCold", "forcedUnreadCold", "archivedCold",
         "blockedChats", "mutedChats", "peerUsernames", "chatListState", "chatListOverlay", "missedUnseen", "unreadCounts", "nseUnread",
         "nsePipeAlias", "nsePipeSecrets", "shareChats", "wakeMyAddr", "wakeMyAuthor", "wakeMyGlyph", "wakeMyName",
-        "nseInbox", "nseShownMids", "nseRoomRang", "heldMids", "missedCallSeeds", "callNoticeTokens", "mt.longblob.wait",
+        "nseInbox", "nseShownMids", "nseRoomRang", "heldMids", "missedCallSeeds", "callNoticeTokens", "mt.longblob.wait", "noticeAliases",
         "mt.passwords"]   // the person's Passwords (MTPasswordVault, 06.10): parked with the seat, never shown to the next person
     /// THE PERSON'S FOLDERS: every folder a copy carries, each parked into the seat and lifted from it by one rename, and the
     /// person's folders a copy leaves on the phone: the files of the posts being written (the wall's load lets go of every

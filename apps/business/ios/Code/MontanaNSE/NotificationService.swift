@@ -88,8 +88,9 @@ final class NotificationService: UNNotificationServiceExtension {
                 content.title = Self.mirroredName(for: owner) ?? "Montana"
                 content.body = String(localized: "Is restoring their account: open Montana to give back the part of their copy you keep", bundle: MTLanguage.bundle)
                 content.sound = .default
-                content.threadIdentifier = owner
-                content.userInfo["chat"] = owner
+                content.threadIdentifier = MTNoticeAlias.of(owner)   // the system hears the conversation's alias (MTNoticeAlias)
+                content.userInfo["chat"] = MTNoticeAlias.of(owner)
+                content.userInfo["from"] = nil
                 Self.diagLine("keep call banner mid=\(mid.prefix(8))")
                 contentHandler(content)
                 return
@@ -187,8 +188,11 @@ final class NotificationService: UNNotificationServiceExtension {
             else { content.userInfo["mid"] = mid }     // the foreground judge suppresses a double by this
             if let room = Self.invitedRoom(rawText) { content.userInfo["room"] = room }   // the tap goes into the room (MTGroupRoom)
             convKey = group?.chat ?? conv
-            content.threadIdentifier = convKey
-            content.userInfo["chat"] = convKey   // the tap opens the EXISTING chat by conv, not a twin by from
+            // THE SYSTEM HEARS THE CONVERSATION'S ALIAS (MTNoticeAlias, 12.10.2026): the thread and the tap carry this phone's alias, the
+            // app reads it back; the push's own sender address leaves the delivered notice.
+            content.threadIdentifier = MTNoticeAlias.of(convKey)
+            content.userInfo["chat"] = MTNoticeAlias.of(convKey)   // the tap opens the EXISTING chat by conv, not a twin by from
+            content.userInfo["from"] = nil
             Self.applySettings(content, conv: convKey)
             Self.diagLine("banner shown mid=\(mid.prefix(8)) quiet=\(openedQuiet)")
             // The node box (7.2c): the push is the one surviving ring, so waiting envelopes
@@ -235,8 +239,9 @@ final class NotificationService: UNNotificationServiceExtension {
             content.title = group?.title ?? Self.title(conv: sc.conv, envName: sc.name)
             content.body = group?.body ?? Self.bannerBody(sc.text)
             if let chat = group?.chat ?? (sc.conv.isEmpty ? nil : sc.conv) {
-                content.threadIdentifier = chat
-                content.userInfo["chat"] = chat
+                content.threadIdentifier = MTNoticeAlias.of(chat)   // the system hears the conversation's alias (MTNoticeAlias)
+                content.userInfo["chat"] = MTNoticeAlias.of(chat)
+                content.userInfo["from"] = nil
                 convKey = chat
                 Self.applySettings(content, conv: chat)
             }
@@ -454,7 +459,7 @@ final class NotificationService: UNNotificationServiceExtension {
     /// content is changed.
     /// `named`: the name the system hears for this notice instead of the conversation (a call's token); the face is still found by `from`.
     private static func nativeFace(_ content: UNMutableNotificationContent, from: String, glyph: String, named: String? = nil) -> UNNotificationContent {
-        let sys = named ?? from
+        let sys = named ?? MTNoticeAlias.of(from)   // the person and the conversation under this phone's alias, never the link (12.10.2026)
         let display = content.title.isEmpty ? (from.isEmpty ? "Contact" : from) : content.title
         // Without a real name the communication intent is not built: the system would draw the
         // title from past donations (precedent «receiver's name instead of the sender's»).

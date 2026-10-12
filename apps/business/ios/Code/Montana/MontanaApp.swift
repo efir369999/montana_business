@@ -679,7 +679,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         MontanaKeychain.set("nseUnread", Data())   // the critic: a live app sees for itself -- the NSE count
         E2E.shared.recalcBadge()                    // goes to zero, the badge does not stick with the window open
         let info = notification.request.content.userInfo
-        let chat = (info["chat"] as? String) ?? ""
+        let chat = MTNoticeAlias.open((info["chat"] as? String) ?? "")   // the notice names its chat by this phone's alias
         // THE JUDGE SPEAKS EVERY VERDICT (21.09, the critic): its silences left no line, and a
         // «second banner» could not be told from «composed, never shown» in the diary.
         let jm = (info["mid"] as? String) ?? ""
@@ -721,7 +721,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
         MontanaOutsideOpen.tappedAt = ProcessInfo.processInfo.systemUptime
-        MontanaOutsideOpen.tappedFor = (info["chat"] as? String) ?? (info["from"] as? String) ?? ""
+        MontanaOutsideOpen.tappedFor = MTNoticeAlias.open((info["chat"] as? String) ?? (info["from"] as? String) ?? "")
         MontanaP2PTrace.mark("notif_tap", mid: (info["mid"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                              "chat=\(String(MontanaOutsideOpen.tappedFor.prefix(10))) action=\(response.actionIdentifier == UNNotificationDefaultActionIdentifier ? "open" : response.actionIdentifier) "
                              + "since_launch_ms=\(Int((ProcessInfo.processInfo.systemUptime - AppDelegate.launchedAt) * 1000))")
@@ -737,8 +737,8 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // A missed call carries a TOKEN, not a conversation link: the system keeps delivered
         // notifications, and a link has no place there. The conversation is found by the token in the vault.
         let chat = (info["call_token"] as? String).map { MontanaMissedCall.conv(forToken: $0) ?? MontanaCallHandle.conv(for: $0) }
-                 ?? (info["chat"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                 ?? (info["from"] as? String) ?? ""
+                 ?? (info["chat"] as? String).flatMap { c in c.isEmpty ? nil : MTNoticeAlias.open(c) }
+                 ?? (info["from"] as? String).map { f in MTNoticeAlias.open(f) } ?? ""
         if let textResp = response as? UNTextInputNotificationResponse, !chat.isEmpty {
             let text = textResp.userText
             // Inline reply launches the app in the BACKGROUND with the E2E core not started:
